@@ -3,7 +3,7 @@
 #include? "LoopFollowDisplayNameConfig.xcconfig"
 #include? "../../LoopFollowDisplayNameConfig.xcconfig"
 
-person = Saffan
+person = Daneen
 unique_id = ${DEVELOPMENT_TEAM}.${person}
 
 //Version (DEFAULT)
