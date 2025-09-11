@@ -1,14 +1,9 @@
-//
-//  PushNotificationManager.swift
-//  LoopFollow
-//
-//  Created by Jonas Björkert on 2024-08-27.
-//  Copyright © 2024 Jon Fawcett. All rights reserved.
-//
+// LoopFollow
+// PushNotificationManager.swift
 
 import Foundation
-import SwiftJWT
 import HealthKit
+import SwiftJWT
 
 struct APNsJWTClaims: Claims {
     let iss: String
@@ -26,14 +21,14 @@ class PushNotificationManager {
     private var bundleId: String
 
     init() {
-        self.deviceToken = Storage.shared.deviceToken.value
-        self.sharedSecret = Storage.shared.sharedSecret.value
-        self.productionEnvironment = Storage.shared.productionEnvironment.value
-        self.apnsKey = Storage.shared.apnsKey.value
-        self.teamId = Storage.shared.teamId.value ?? ""
-        self.keyId = Storage.shared.keyId.value
-        self.user = Storage.shared.user.value
-        self.bundleId = Storage.shared.bundleId.value
+        deviceToken = Storage.shared.deviceToken.value
+        sharedSecret = Storage.shared.sharedSecret.value
+        productionEnvironment = Storage.shared.productionEnvironment.value
+        apnsKey = Storage.shared.apnsKey.value
+        teamId = Storage.shared.teamId.value ?? ""
+        keyId = Storage.shared.keyId.value
+        user = Storage.shared.user.value
+        bundleId = Storage.shared.bundleId.value
     }
 
     func sendOverridePushNotification(override: ProfileManager.TrioOverride, completion: @escaping (Bool, String?) -> Void) {
@@ -189,10 +184,11 @@ class PushNotificationManager {
         let lines = pemString.components(separatedBy: "\n")
         guard let startIndex = lines.firstIndex(of: "-----BEGIN PRIVATE KEY-----"),
               let endIndex = lines.firstIndex(of: "-----END PRIVATE KEY-----"),
-              startIndex < endIndex else {
+              startIndex < endIndex
+        else {
             return nil
         }
-        let keyLines = lines[(startIndex + 1)..<endIndex]
+        let keyLines = lines[(startIndex + 1) ..< endIndex]
         return keyLines.joined()
     }
 
@@ -237,7 +233,7 @@ class PushNotificationManager {
             return
         }
 
-        guard let jwt = getOrGenerateJWT() else {
+        guard let jwt = JWTManager.shared.getOrGenerateJWT(keyId: keyId, teamId: teamId, apnsKey: apnsKey) else {
             let errorMessage = "Failed to generate JWT, please check that the token is correct."
             LogManager.shared.log(category: .apns, message: errorMessage)
             completion(false, errorMessage)
@@ -278,8 +274,9 @@ class PushNotificationManager {
                     if let data = data, let responseBody = String(data: data, encoding: .utf8) {
                         print("Response body: \(responseBody)")
 
-                            if let json = try? JSONSerialization.jsonObject(with: data, options: []) as? [String: Any],
-                           let reason = json["reason"] as? String {
+                        if let json = try? JSONSerialization.jsonObject(with: data, options: []) as? [String: Any],
+                           let reason = json["reason"] as? String
+                        {
                             responseBodyMessage = reason
                         }
                     } else {
@@ -327,33 +324,5 @@ class PushNotificationManager {
         let host = productionEnvironment ? "api.push.apple.com" : "api.sandbox.push.apple.com"
         let urlString = "https://\(host)/3/device/\(deviceToken)"
         return URL(string: urlString)
-    }
-
-
-    private func getOrGenerateJWT() -> String? {
-        if let cachedJWT = Storage.shared.cachedJWT.value, let expirationDate = Storage.shared.jwtExpirationDate.value {
-            if Date() < expirationDate {
-                return cachedJWT
-            }
-        }
-
-        let header = Header(kid: keyId)
-        let claims = APNsJWTClaims(iss: teamId, iat: Date())
-
-        var jwt = JWT(header: header, claims: claims)
-
-        do {
-            let privateKey = Data(apnsKey.utf8)
-            let jwtSigner = JWTSigner.es256(privateKey: privateKey)
-            let signedJWT = try jwt.sign(using: jwtSigner)
-
-            Storage.shared.cachedJWT.value = signedJWT
-            Storage.shared.jwtExpirationDate.value = Date().addingTimeInterval(3600)
-
-            return signedJWT
-        } catch {
-            print("Failed to sign JWT: \(error.localizedDescription)")
-            return nil
-        }
     }
 }
