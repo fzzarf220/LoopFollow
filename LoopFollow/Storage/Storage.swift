@@ -160,12 +160,16 @@ class Storage {
     var persistentNotificationLastBGTime = StorageValue<Date>(key: "persistentNotificationLastBGTime", defaultValue: .distantPast)
 
     var lastLoopingChecked = StorageValue<Date?>(key: "lastLoopingChecked", defaultValue: nil)
+    var lastBGChecked = StorageValue<Date?>(key: "lastBGChecked", defaultValue: nil)
 
     var alarmsPosition = StorageValue<TabPosition>(key: "alarmsPosition", defaultValue: .position2)
     var remotePosition = StorageValue<TabPosition>(key: "remotePosition", defaultValue: .more)
     var nightscoutPosition = StorageValue<TabPosition>(key: "nightscoutPosition", defaultValue: .position4)
 
     var loopAPNSQrCodeURL = StorageValue<String>(key: "loopAPNSQrCodeURL", defaultValue: "")
+
+    var returnApnsKey = StorageValue<String>(key: "returnApnsKey", defaultValue: "")
+    var returnKeyId = StorageValue<String>(key: "returnKeyId", defaultValue: "")
 
     static let shared = Storage()
     private init() {}
