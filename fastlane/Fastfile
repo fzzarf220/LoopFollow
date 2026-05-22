@@ -58,7 +58,8 @@ platform :ios do
       type: "appstore",
       git_basic_authorization: Base64.strict_encode64("#{GITHUB_REPOSITORY_OWNER}:#{GH_PAT}"),
       app_identifier: [
-        "#{APPID}"
+        "#{APPID}",
+        "#{APPID}.LoopFollowLAExtension"
       ]
     )
 
@@ -73,13 +74,26 @@ platform :ios do
       targets: ["LoopFollow"]
     )
 
+    update_code_signing_settings(
+      path: "#{GITHUB_WORKSPACE}/LoopFollow.xcodeproj",    
+      profile_name: mapping["#{APPID}.LoopFollowLAExtension"],
+      code_sign_identity: "iPhone Distribution",
+      targets: ["LoopFollowLAExtensionExtension"]
+    )
+
     gym(
       export_method: "app-store",
       scheme: "LoopFollow",
       output_name: "LoopFollow.ipa",
       configuration: "Release",
       destination: 'generic/platform=iOS',
-      buildlog_path: 'buildlog'
+      buildlog_path: 'buildlog',
+      export_options: {
+        provisioningProfiles: {
+          "#{APPID}" => mapping["#{APPID}"],
+          "#{APPID}.LoopFollowLAExtension" => mapping["#{APPID}.LoopFollowLAExtension"]
+        }
+      }	
     )
 
     copy_artifacts(
@@ -128,9 +142,14 @@ platform :ios do
     end
 
     configure_bundle_id("LoopFollow", "#{APPID}", [
+      Spaceship::ConnectAPI::BundleIdCapability::Type::APP_GROUPS,
       Spaceship::ConnectAPI::BundleIdCapability::Type::PUSH_NOTIFICATIONS
     ])
     
+    configure_bundle_id("LoopFollow Live Activity Extension", "#{APPID}.LoopFollowLAExtension", [
+      Spaceship::ConnectAPI::BundleIdCapability::Type::APP_GROUPS
+    ])
+
   end
 
   desc "Provision Certificates"
@@ -151,6 +170,7 @@ platform :ios do
       git_basic_authorization: Base64.strict_encode64("#{GITHUB_REPOSITORY_OWNER}:#{GH_PAT}"),
       app_identifier: [
         "#{APPID}",
+        "#{APPID}.LoopFollowLAExtension"
       ]
     )
   end
@@ -165,12 +185,6 @@ platform :ios do
       issuer_id: "#{FASTLANE_ISSUER_ID}",
       key_content: "#{FASTLANE_KEY}"
     )
-
-    def find_bundle_id(identifier)
-      bundle_id = Spaceship::ConnectAPI::BundleId.find(identifier)
-    end
-
-    find_bundle_id("com.#{TEAMID}.loopkit.LoopFollow")
 
     match(
       type: "appstore",

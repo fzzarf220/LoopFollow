@@ -33,6 +33,7 @@ struct MealView: View {
     @State private var statusMessage: String? = nil
     @State private var selectedTime: Date? = nil
     @State private var isScheduling: Bool = false
+    @State private var showFatProteinOrderBanner = false
 
     enum AlertType {
         case confirmMeal
@@ -46,6 +47,24 @@ struct MealView: View {
             VStack {
                 Form {
                     Section(header: Text("Meal Data")) {
+                        // TODO: This banner can be deleted in March 2027. Check the commit for other places to cleanup.
+                        if showFatProteinOrderBanner {
+                            HStack {
+                                Image(systemName: "arrow.left.arrow.right")
+                                Text("The order of Fat and Protein inputs has changed.").font(.callout)
+                                Spacer()
+                                Button {
+                                    Storage.shared.hasSeenFatProteinOrderChange.value = true
+                                    withAnimation { showFatProteinOrderBanner = false }
+                                } label: {
+                                    Image(systemName: "xmark.circle.fill")
+                                }
+                                .buttonStyle(.plain)
+                            }
+                            .listRowBackground(Color.orange.opacity(0.75))
+                            .transition(.opacity)
+                        }
+
                         HKQuantityInputView(
                             label: "Carbs",
                             quantity: $carbs,
@@ -61,19 +80,6 @@ struct MealView: View {
 
                         if mealWithFatProtein.value {
                             HKQuantityInputView(
-                                label: "Protein",
-                                quantity: $protein,
-                                unit: .gram(),
-                                maxLength: 4,
-                                minValue: HKQuantity(unit: .gram(), doubleValue: 0),
-                                maxValue: maxProtein.value,
-                                isFocused: $proteinFieldIsFocused,
-                                onValidationError: { message in
-                                    handleValidationError(message)
-                                }
-                            )
-
-                            HKQuantityInputView(
                                 label: "Fat",
                                 quantity: $fat,
                                 unit: .gram(),
@@ -81,6 +87,19 @@ struct MealView: View {
                                 minValue: HKQuantity(unit: .gram(), doubleValue: 0),
                                 maxValue: maxFat.value,
                                 isFocused: $fatFieldIsFocused,
+                                onValidationError: { message in
+                                    handleValidationError(message)
+                                }
+                            )
+
+                            HKQuantityInputView(
+                                label: "Protein",
+                                quantity: $protein,
+                                unit: .gram(),
+                                maxLength: 4,
+                                minValue: HKQuantity(unit: .gram(), doubleValue: 0),
+                                maxValue: maxProtein.value,
+                                isFocused: $proteinFieldIsFocused,
                                 onValidationError: { message in
                                     handleValidationError(message)
                                 }
@@ -121,31 +140,44 @@ struct MealView: View {
                             }
                         }
                     }
+                }
+                .safeAreaInset(edge: .bottom) {
+                    Button {
+                        carbsFieldIsFocused = false
+                        proteinFieldIsFocused = false
+                        fatFieldIsFocused = false
 
-                    LoadingButtonView(
-                        buttonText: "Send Meal",
-                        progressText: "Sending Meal Data...",
-                        isLoading: isLoading,
-                        action: {
-                            carbsFieldIsFocused = false
-                            proteinFieldIsFocused = false
-                            fatFieldIsFocused = false
-
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                                guard carbs.doubleValue(for: .gram()) != 0 ||
-                                    protein.doubleValue(for: .gram()) != 0 ||
-                                    fat.doubleValue(for: .gram()) != 0
-                                else {
-                                    return
-                                }
-                                if !showAlert {
-                                    alertType = .confirmMeal
-                                    showAlert = true
-                                }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                            guard carbs.doubleValue(for: .gram()) != 0 ||
+                                protein.doubleValue(for: .gram()) != 0 ||
+                                fat.doubleValue(for: .gram()) != 0
+                            else {
+                                return
                             }
-                        },
-                        isDisabled: isButtonDisabled
-                    )
+                            if !showAlert {
+                                alertType = .confirmMeal
+                                showAlert = true
+                            }
+                        }
+                    } label: {
+                        if isLoading {
+                            HStack {
+                                ProgressView()
+                                    .scaleEffect(0.8)
+                                Text("Sending Meal Data...")
+                            }
+                            .frame(maxWidth: .infinity)
+                        } else {
+                            Text("Send Meal")
+                                .frame(maxWidth: .infinity)
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                    .disabled(isButtonDisabled)
+                    .padding(.horizontal)
+                    .padding(.vertical, 8)
+                    .background(.bar)
                 }
                 .navigationTitle("Meal")
                 .navigationBarTitleDisplayMode(.inline)
@@ -153,6 +185,10 @@ struct MealView: View {
             .onAppear {
                 selectedTime = nil
                 isScheduling = false
+
+                if !Storage.shared.hasSeenFatProteinOrderChange.value && Storage.shared.mealWithFatProtein.value {
+                    showFatProteinOrderBanner = true
+                }
             }
             .alert(isPresented: $showAlert) {
                 switch alertType {
@@ -196,12 +232,26 @@ struct MealView: View {
                             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
                                 if bolusAmount > 0 {
                                     AuthService.authenticate(reason: "Confirm your identity to send bolus.") { result in
-                                        if case .success = result {
-                                            sendMealCommand()
+                                        DispatchQueue.main.async {
+                                            switch result {
+                                            case .success:
+                                                self.sendMealCommand()
+                                            case let .unavailable(message):
+                                                self.alertMessage = message
+                                                self.alertType = .validationError
+                                                self.showAlert = true
+                                            case .failed:
+                                                self.alertMessage = "Authentication failed"
+                                                self.alertType = .validationError
+                                                self.showAlert = true
+                                            case .canceled:
+                                                // User canceled, no alert
+                                                break
+                                            }
                                         }
                                     }
                                 } else {
-                                    sendMealCommand()
+                                    self.sendMealCommand()
                                 }
                             }
                         }),

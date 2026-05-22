@@ -3,7 +3,6 @@
 
 import Foundation
 import HealthKit
-import SwiftJWT
 
 class PushNotificationManager {
     private var deviceToken: String
@@ -19,11 +18,22 @@ class PushNotificationManager {
         deviceToken = Storage.shared.deviceToken.value
         sharedSecret = Storage.shared.sharedSecret.value
         productionEnvironment = Storage.shared.productionEnvironment.value
-        apnsKey = Storage.shared.apnsKey.value
-        teamId = Storage.shared.teamId.value ?? ""
-        keyId = Storage.shared.keyId.value
         user = Storage.shared.user.value
         bundleId = Storage.shared.bundleId.value
+
+        let lfTeamId = BuildDetails.default.teamID ?? ""
+        let remoteTeamId = Storage.shared.teamId.value ?? ""
+        let sameTeam = !lfTeamId.isEmpty && !remoteTeamId.isEmpty && lfTeamId == remoteTeamId
+
+        if sameTeam || remoteTeamId.isEmpty {
+            apnsKey = Storage.shared.lfApnsKey.value
+            keyId = Storage.shared.lfKeyId.value
+            teamId = lfTeamId
+        } else {
+            apnsKey = Storage.shared.remoteApnsKey.value
+            keyId = Storage.shared.remoteKeyId.value
+            teamId = remoteTeamId
+        }
     }
 
     private func createReturnNotificationInfo() -> CommandPayload.ReturnNotificationInfo? {
@@ -38,20 +48,11 @@ class PushNotificationManager {
             return nil
         }
 
-        let teamIdsAreDifferent = loopFollowTeamID != teamId
-        let keyIdForReturn: String
-        let apnsKeyForReturn: String
+        let lfKeyId = Storage.shared.lfKeyId.value
+        let lfApnsKey = Storage.shared.lfApnsKey.value
 
-        if teamIdsAreDifferent {
-            keyIdForReturn = Storage.shared.returnKeyId.value
-            apnsKeyForReturn = Storage.shared.returnApnsKey.value
-        } else {
-            keyIdForReturn = keyId
-            apnsKeyForReturn = apnsKey
-        }
-
-        guard !keyIdForReturn.isEmpty, !apnsKeyForReturn.isEmpty else {
-            LogManager.shared.log(category: .apns, message: "Missing required return APNS credentials. Check Remote Settings.")
+        guard !lfKeyId.isEmpty, !lfApnsKey.isEmpty else {
+            LogManager.shared.log(category: .apns, message: "Missing LoopFollow APNS credentials. Configure them in App Settings → APN.")
             return nil
         }
 
@@ -60,8 +61,8 @@ class PushNotificationManager {
             deviceToken: loopFollowDeviceToken,
             bundleId: Bundle.main.bundleIdentifier ?? "",
             teamId: loopFollowTeamID,
-            keyId: keyIdForReturn,
-            apnsKey: apnsKeyForReturn
+            keyId: lfKeyId,
+            apnsKey: lfApnsKey
         )
     }
 
@@ -252,16 +253,17 @@ class PushNotificationManager {
             }
 
             let encryptedDataString = try messenger.encrypt(payload)
-            let finalMessage = EncryptedPushMessage(encryptedData: encryptedDataString)
+            let finalMessage = EncryptedPushMessage(encryptedData: encryptedDataString, commandType: payload.commandType)
 
             var request = URLRequest(url: url)
             request.httpMethod = "POST"
             request.setValue("bearer \(jwt)", forHTTPHeaderField: "authorization")
             request.setValue("application/json", forHTTPHeaderField: "content-type")
             request.setValue("10", forHTTPHeaderField: "apns-priority")
-            request.setValue("0", forHTTPHeaderField: "apns-expiration")
+            request.setValue("600", forHTTPHeaderField: "apns-expiration")
             request.setValue(bundleId, forHTTPHeaderField: "apns-topic")
-            request.setValue("background", forHTTPHeaderField: "apns-push-type")
+            request.setValue("alert", forHTTPHeaderField: "apns-push-type")
+            request.setValue(payload.commandType.rawValue, forHTTPHeaderField: "apns-collapse-id")
 
             request.httpBody = try JSONEncoder().encode(finalMessage)
 
@@ -274,12 +276,11 @@ class PushNotificationManager {
                 }
 
                 if let httpResponse = response as? HTTPURLResponse {
-                    print("Push notification sent.")
-                    print("Status code: \(httpResponse.statusCode)")
+                    LogManager.shared.log(category: .apns, message: "Push notification sent. Status code: \(httpResponse.statusCode)", isDebug: true)
 
                     var responseBodyMessage = ""
                     if let data = data, let responseBody = String(data: data, encoding: .utf8) {
-                        print("Response body: \(responseBody)")
+                        LogManager.shared.log(category: .apns, message: "Response body: \(responseBody)", isDebug: true)
                         if let json = try? JSONSerialization.jsonObject(with: data, options: []) as? [String: Any],
                            let reason = json["reason"] as? String
                         {
@@ -293,6 +294,7 @@ class PushNotificationManager {
                     case 400:
                         completion(false, "Bad request. The request was invalid or malformed. \(responseBodyMessage)")
                     case 403:
+                        JWTManager.shared.invalidateCache()
                         completion(false, "Authentication error. Check your certificate or authentication token. \(responseBodyMessage)")
                     case 404:
                         completion(false, "Invalid request: The :path value was incorrect. \(responseBodyMessage)")

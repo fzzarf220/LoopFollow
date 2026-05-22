@@ -4,6 +4,25 @@
 import Foundation
 
 class dateTimeUtils {
+    static func displayTimeZone() -> TimeZone {
+        if Storage.shared.graphTimeZoneEnabled.value,
+           let tz = TimeZone(identifier: Storage.shared.graphTimeZoneIdentifier.value)
+        {
+            return tz
+        }
+        return .current
+    }
+
+    static func displayCalendar() -> Calendar {
+        var calendar = Calendar.current
+        calendar.timeZone = displayTimeZone()
+        return calendar
+    }
+
+    static func applyDisplayTimeZone(to formatter: DateFormatter) {
+        formatter.timeZone = displayTimeZone()
+    }
+
     static func getTimeIntervalMidnightToday() -> TimeInterval {
         let now = Date()
         let formatter = DateFormatter()
@@ -50,16 +69,20 @@ class dateTimeUtils {
         return utcTime
     }
 
-    static func getDateTimeString(addingHours hours: Int? = nil, addingDays days: Int? = nil) -> String {
+    static func getDateTimeString(addingMinutes minutes: Int? = nil, addingHours hours: Int? = nil, addingDays days: Int? = nil) -> String {
         let currentDate = Date()
         var date = currentDate
 
+        if let minutesToAdd = minutes {
+            date = Calendar.current.date(byAdding: .minute, value: minutesToAdd, to: date)!
+        }
+
         if let hoursToAdd = hours {
-            date = Calendar.current.date(byAdding: .hour, value: hoursToAdd, to: currentDate)!
+            date = Calendar.current.date(byAdding: .hour, value: hoursToAdd, to: date)!
         }
 
         if let daysToAdd = days {
-            date = Calendar.current.date(byAdding: .day, value: daysToAdd, to: currentDate)!
+            date = Calendar.current.date(byAdding: .day, value: daysToAdd, to: date)!
         }
 
         let dateFormatter = DateFormatter()

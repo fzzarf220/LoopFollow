@@ -11,14 +11,78 @@ struct NightscoutSettingsExport: Codable {
     let url: String
     let token: String
     let units: String
+    let glycemicMetricMode: String
+    let glycemicOutputUnit: String
+    let timeInRangeMode: String
+    let lowLine: Double?
+    let highLine: Double?
+    let variabilityMetricMode: String
+
+    enum CodingKeys: String, CodingKey {
+        case version
+        case url
+        case token
+        case units
+        case glycemicMetricMode
+        case glycemicOutputUnit
+        case timeInRangeMode
+        case lowLine
+        case highLine
+        case variabilityMetricMode
+    }
+
+    init(
+        version: String,
+        url: String,
+        token: String,
+        units: String,
+        glycemicMetricMode: String,
+        glycemicOutputUnit: String,
+        timeInRangeMode: String,
+        lowLine: Double?,
+        highLine: Double?,
+        variabilityMetricMode: String
+    ) {
+        self.version = version
+        self.url = url
+        self.token = token
+        self.units = units
+        self.glycemicMetricMode = glycemicMetricMode
+        self.glycemicOutputUnit = glycemicOutputUnit
+        self.timeInRangeMode = timeInRangeMode
+        self.lowLine = lowLine
+        self.highLine = highLine
+        self.variabilityMetricMode = variabilityMetricMode
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        version = try container.decode(String.self, forKey: .version)
+        url = try container.decode(String.self, forKey: .url)
+        token = try container.decode(String.self, forKey: .token)
+        units = try container.decodeIfPresent(String.self, forKey: .units) ?? GlucoseDisplayUnit.mgdL.rawValue
+        glycemicMetricMode = try container.decodeIfPresent(String.self, forKey: .glycemicMetricMode) ?? GlycemicMetricMode.gmi.rawValue
+        glycemicOutputUnit = try container.decodeIfPresent(String.self, forKey: .glycemicOutputUnit) ?? GlycemicOutputUnit.percent.rawValue
+        timeInRangeMode = try container.decodeIfPresent(String.self, forKey: .timeInRangeMode) ?? TimeInRangeDisplayMode.tir.rawValue
+        lowLine = try container.decodeIfPresent(Double.self, forKey: .lowLine)
+        highLine = try container.decodeIfPresent(Double.self, forKey: .highLine)
+        variabilityMetricMode = try container.decodeIfPresent(String.self, forKey: .variabilityMetricMode) ?? VariabilityMetricMode.stdDeviation.rawValue
+    }
 
     static func fromCurrentStorage() -> NightscoutSettingsExport {
         let storage = Storage.shared
+        let unitSettings = UnitSettingsStore.shared
         return NightscoutSettingsExport(
             version: AppVersionManager().version(),
             url: storage.url.value,
             token: storage.token.value,
-            units: storage.units.value
+            units: storage.units.value,
+            glycemicMetricMode: unitSettings.glycemicMetricMode.rawValue,
+            glycemicOutputUnit: unitSettings.glycemicOutputUnit.rawValue,
+            timeInRangeMode: unitSettings.timeInRangeMode.rawValue,
+            lowLine: storage.lowLine.value,
+            highLine: storage.highLine.value,
+            variabilityMetricMode: unitSettings.variabilityMetricMode.rawValue
         )
     }
 
@@ -27,6 +91,25 @@ struct NightscoutSettingsExport: Codable {
         storage.url.value = url
         storage.token.value = token
         storage.units.value = units
+
+        if let glycemicMetricMode = GlycemicMetricMode(rawValue: glycemicMetricMode) {
+            UnitSettingsStore.shared.glycemicMetricMode = glycemicMetricMode
+        }
+        if let glycemicOutputUnit = GlycemicOutputUnit(rawValue: glycemicOutputUnit) {
+            UnitSettingsStore.shared.glycemicOutputUnit = glycemicOutputUnit
+        }
+        if let timeInRangeMode = TimeInRangeDisplayMode(rawValue: timeInRangeMode) {
+            UnitSettingsStore.shared.timeInRangeMode = timeInRangeMode
+        }
+        if let lowLine = lowLine {
+            storage.lowLine.value = lowLine
+        }
+        if let highLine = highLine {
+            storage.highLine.value = highLine
+        }
+        if let variabilityMetricMode = VariabilityMetricMode(rawValue: variabilityMetricMode) {
+            UnitSettingsStore.shared.variabilityMetricMode = variabilityMetricMode
+        }
     }
 
     func encodeToJSON() -> String? {
@@ -148,8 +231,8 @@ struct RemoteSettingsExport: Codable {
     let remoteType: RemoteType
     let user: String
     let sharedSecret: String
-    let apnsKey: String
-    let keyId: String
+    let remoteApnsKey: String
+    let remoteKeyId: String
     let teamId: String?
     let maxBolus: Double
     let maxCarbs: Double
@@ -168,8 +251,8 @@ struct RemoteSettingsExport: Codable {
             remoteType: storage.remoteType.value,
             user: storage.user.value,
             sharedSecret: storage.sharedSecret.value,
-            apnsKey: storage.apnsKey.value,
-            keyId: storage.keyId.value,
+            remoteApnsKey: storage.remoteApnsKey.value,
+            remoteKeyId: storage.remoteKeyId.value,
             teamId: storage.teamId.value,
             maxBolus: storage.maxBolus.value.doubleValue(for: .internationalUnit()),
             maxCarbs: storage.maxCarbs.value.doubleValue(for: .gram()),
@@ -189,8 +272,8 @@ struct RemoteSettingsExport: Codable {
         storage.remoteType.value = remoteType
         storage.user.value = user
         storage.sharedSecret.value = sharedSecret
-        storage.apnsKey.value = apnsKey
-        storage.keyId.value = keyId
+        storage.remoteApnsKey.value = remoteApnsKey
+        storage.remoteKeyId.value = remoteKeyId
         storage.teamId.value = teamId
         storage.maxBolus.value = HKQuantity(unit: .internationalUnit(), doubleValue: maxBolus)
         storage.maxCarbs.value = HKQuantity(unit: .gram(), doubleValue: maxCarbs)
@@ -237,9 +320,9 @@ struct RemoteSettingsExport: Codable {
         case .nightscout:
             return !user.isEmpty
         case .trc:
-            return !user.isEmpty && !sharedSecret.isEmpty && !apnsKey.isEmpty && !keyId.isEmpty
+            return !user.isEmpty && !sharedSecret.isEmpty && !remoteApnsKey.isEmpty && !remoteKeyId.isEmpty
         case .loopAPNS:
-            return !keyId.isEmpty && !apnsKey.isEmpty && teamId != nil && !loopAPNSQrCodeURL.isEmpty
+            return !remoteKeyId.isEmpty && !remoteApnsKey.isEmpty && teamId != nil && !loopAPNSQrCodeURL.isEmpty
         }
     }
 
@@ -266,14 +349,14 @@ struct RemoteSettingsExport: Codable {
 
         // For TRC and LoopAPNS, check if key details are changing
         if remoteType == .trc || remoteType == .loopAPNS {
-            let currentKeyId = storage.keyId.value
-            let currentApnsKey = storage.apnsKey.value
+            let currentKeyId = storage.remoteKeyId.value
+            let currentApnsKey = storage.remoteApnsKey.value
 
-            if !currentKeyId.isEmpty, currentKeyId != keyId {
+            if !currentKeyId.isEmpty, currentKeyId != remoteKeyId {
                 message += "APNS Key ID is changing. This may affect your remote commands.\n"
             }
 
-            if !currentApnsKey.isEmpty, currentApnsKey != apnsKey {
+            if !currentApnsKey.isEmpty, currentApnsKey != remoteApnsKey {
                 message += "APNS Key is changing. This may affect your remote commands.\n"
             }
         }

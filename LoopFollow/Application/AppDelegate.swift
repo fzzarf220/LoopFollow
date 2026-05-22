@@ -6,7 +6,7 @@ import EventKit
 import UIKit
 import UserNotifications
 
-@UIApplicationMain
+@main
 class AppDelegate: UIResponder, UIApplicationDelegate {
     var window: UIWindow?
     let notificationCenter = UNUserNotificationCenter.current()
@@ -32,7 +32,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         }
 
         let action = UNNotificationAction(identifier: "OPEN_APP_ACTION", title: "Open App", options: .foreground)
-        let category = UNNotificationCategory(identifier: "loopfollow.background.alert", actions: [action], intentIdentifiers: [], options: [])
+        let category = UNNotificationCategory(identifier: BackgroundAlertIdentifier.categoryIdentifier, actions: [action], intentIdentifiers: [], options: [])
         UNUserNotificationCenter.current().setNotificationCategories([category])
 
         UNUserNotificationCenter.current().delegate = self
@@ -45,30 +45,60 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         DispatchQueue.main.async {
             UIApplication.shared.registerForRemoteNotifications()
         }
+
+        BackgroundRefreshManager.shared.register()
+
+        // Telemetry: record this cold launch (used by the rolling
+        // coldLaunches7d signal). If the running build's SHA differs from
+        // the one we last sent for, fire an immediate ping — the scheduler
+        // alone can't notice an app update. Otherwise let the 24h scheduler
+        // handle cadence: its first run is lastSentAt + 24h, so a relaunch
+        // a few hours after the previous send simply waits out the
+        // remainder. See Helpers/Telemetry.swift.
+        TelemetryClient.shared.recordColdLaunch()
+        Task.detached {
+            if TelemetryClient.shared.buildShaChangedSinceLastSend() {
+                await TelemetryClient.shared.maybeSend()
+            }
+            TelemetryClient.shared.scheduleRecurring()
+        }
+
+        // Detect Before-First-Unlock launch. If protected data is unavailable here,
+        // StorageValues were cached from encrypted UserDefaults and need a reload
+        // on the first foreground after the user unlocks.
+        let bfu = !UIApplication.shared.isProtectedDataAvailable
+        Storage.shared.needsBFUReload = bfu
+        LogManager.shared.log(category: .general, message: "BFU check: isProtectedDataAvailable=\(!bfu), needsBFUReload=\(bfu)")
+
         return true
     }
 
-    func applicationWillTerminate(_: UIApplication) {}
+    func applicationWillTerminate(_: UIApplication) {
+        #if !targetEnvironment(macCatalyst)
+            LiveActivityManager.shared.endOnTerminate()
+        #endif
+    }
 
     // MARK: - Remote Notifications
 
-    // Called when successfully registered for remote notifications
+    /// Called when successfully registered for remote notifications
     func application(_: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
         let tokenString = deviceToken.map { String(format: "%02.2hhx", $0) }.joined()
 
         Observable.shared.loopFollowDeviceToken.value = tokenString
 
-        LogManager.shared.log(category: .general, message: "Successfully registered for remote notifications with token: \(tokenString)")
+        LogManager.shared.log(category: .apns, message: "Successfully registered for remote notifications with token: \(LogRedactor.tail(tokenString))")
     }
 
-    // Called when failed to register for remote notifications
+    /// Called when failed to register for remote notifications
     func application(_: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {
-        LogManager.shared.log(category: .general, message: "Failed to register for remote notifications: \(error.localizedDescription)")
+        LogManager.shared.log(category: .apns, message: "Failed to register for remote notifications: \(error.localizedDescription)")
     }
 
-    // Called when a remote notification is received
+    /// Called when a remote notification is received
     func application(_: UIApplication, didReceiveRemoteNotification userInfo: [AnyHashable: Any], fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void) {
-        LogManager.shared.log(category: .general, message: "Received remote notification: \(userInfo)")
+        let userInfoKeys = userInfo.keys.compactMap { $0 as? String }.sorted()
+        LogManager.shared.log(category: .apns, message: "Received remote notification: keys=\(userInfoKeys)")
 
         // Check if this is a response notification from Loop or Trio
         if let aps = userInfo["aps"] as? [String: Any] {
@@ -76,7 +106,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
             if let alert = aps["alert"] as? [String: Any] {
                 let title = alert["title"] as? String ?? ""
                 let body = alert["body"] as? String ?? ""
-                LogManager.shared.log(category: .general, message: "Notification - Title: \(title), Body: \(body)")
+                LogManager.shared.log(category: .apns, message: "Notification - Title: \(title), Body: \(body)")
             }
 
             // Handle silent notification (content-available)
@@ -84,11 +114,11 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
                 // This is a silent push, nothing implemented but logging for now
 
                 if let commandStatus = userInfo["command_status"] as? String {
-                    LogManager.shared.log(category: .general, message: "Command status: \(commandStatus)")
+                    LogManager.shared.log(category: .apns, message: "Command status: \(commandStatus)")
                 }
 
                 if let commandType = userInfo["command_type"] as? String {
-                    LogManager.shared.log(category: .general, message: "Command type: \(commandType)")
+                    LogManager.shared.log(category: .apns, message: "Command type: \(commandType)")
                 }
             }
         }
@@ -96,6 +126,12 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         // Call completion handler
         completionHandler(.newData)
     }
+
+    // MARK: - URL handling
+
+    // Note: with scene-based lifecycle (iOS 13+), URLs are delivered to
+    // SceneDelegate.scene(_:openURLContexts:) — not here. The scene delegate
+    // handles <urlScheme>://la-tap for Live Activity tap navigation.
 
     // MARK: UISceneSession Lifecycle
 
@@ -110,7 +146,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     func application(_: UIApplication, configurationForConnecting connectingSceneSession: UISceneSession, options _: UIScene.ConnectionOptions) -> UISceneConfiguration {
         // Called when a new scene session is being created.
         // Use this method to select a configuration to create the new scene with.
-        return UISceneConfiguration(name: "Default Configuration", sessionRole: connectingSceneSession.role)
+        UISceneConfiguration(name: "Default Configuration", sessionRole: connectingSceneSession.role)
     }
 
     func application(_: UIApplication, didDiscardSceneSessions _: Set<UISceneSession>) {
@@ -166,7 +202,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
 
     func userNotificationCenter(_: UNUserNotificationCenter, didReceive response: UNNotificationResponse, withCompletionHandler completionHandler: @escaping () -> Void) {
         if response.actionIdentifier == "OPEN_APP_ACTION" {
-            if let window = window {
+            if let window {
                 window.rootViewController?.dismiss(animated: true, completion: nil)
                 window.rootViewController?.present(MainViewController(), animated: true, completion: nil)
             }
@@ -197,7 +233,8 @@ extension AppDelegate: UNUserNotificationCenterDelegate {
     {
         // Log the notification
         let userInfo = notification.request.content.userInfo
-        LogManager.shared.log(category: .general, message: "Will present notification: \(userInfo)")
+        let userInfoKeys = userInfo.keys.compactMap { $0 as? String }.sorted()
+        LogManager.shared.log(category: .general, message: "Will present notification: keys=\(userInfoKeys)")
 
         // Show the notification even when app is in foreground
         completionHandler([.banner, .sound, .badge])
