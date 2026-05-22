@@ -109,22 +109,6 @@ struct LoopAPNSBolusView: View {
                         }
                     }
 
-                    Section {
-                        Button(action: sendInsulin) {
-                            if isLoading {
-                                HStack {
-                                    ProgressView()
-                                        .scaleEffect(0.8)
-                                    Text("Sending...")
-                                }
-                            } else {
-                                Text("Send Insulin")
-                            }
-                        }
-                        .disabled(insulinAmount.doubleValue(for: .internationalUnit()) <= 0 || isLoading || isTOTPBlocked)
-                        .frame(maxWidth: .infinity)
-                    }
-
                     // TOTP Blocking Warning Section
                     if isTOTPBlocked && showTOTPWarning {
                         Section {
@@ -167,6 +151,27 @@ struct LoopAPNSBolusView: View {
                             }
                         }
                     }
+                }
+                .safeAreaInset(edge: .bottom) {
+                    Button(action: sendInsulin) {
+                        if isLoading {
+                            HStack {
+                                ProgressView()
+                                    .scaleEffect(0.8)
+                                Text("Sending...")
+                            }
+                            .frame(maxWidth: .infinity)
+                        } else {
+                            Text("Send Insulin")
+                                .frame(maxWidth: .infinity)
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                    .disabled(insulinAmount.doubleValue(for: .internationalUnit()) <= 0 || isLoading || isTOTPBlocked)
+                    .padding(.horizontal)
+                    .padding(.vertical, 8)
+                    .background(.bar)
                 }
                 .navigationTitle("Insulin")
                 .navigationBarTitleDisplayMode(.inline)
@@ -326,20 +331,22 @@ struct LoopAPNSBolusView: View {
 
     private func authenticateAndSendInsulin() {
         AuthService.authenticate(reason: "Confirm your identity to send insulin.") { result in
-            switch result {
-            case .success:
-                sendInsulinConfirmed()
-            case .unavailable:
-                alertMessage = "Authentication not available"
-                alertType = .error
-                showAlert = true
-            case .failed:
-                alertMessage = "Authentication failed"
-                alertType = .error
-                showAlert = true
-            case .canceled:
-                // User canceled: no alert to avoid spammy UX
-                break
+            DispatchQueue.main.async {
+                switch result {
+                case .success:
+                    self.sendInsulinConfirmed()
+                case let .unavailable(message):
+                    self.alertMessage = message
+                    self.alertType = .error
+                    self.showAlert = true
+                case .failed:
+                    self.alertMessage = "Authentication failed"
+                    self.alertType = .error
+                    self.showAlert = true
+                case .canceled:
+                    // User canceled: no alert to avoid spammy UX
+                    break
+                }
             }
         }
     }
