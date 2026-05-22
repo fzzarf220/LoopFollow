@@ -15,9 +15,12 @@ class Storage {
     var expirationDate = StorageValue<Date?>(key: "expirationDate", defaultValue: nil)
     var sharedSecret = StorageValue<String>(key: "sharedSecret", defaultValue: "")
     var productionEnvironment = StorageValue<Bool>(key: "productionEnvironment", defaultValue: false)
-    var apnsKey = StorageValue<String>(key: "apnsKey", defaultValue: "")
+    var remoteApnsKey = StorageValue<String>(key: "remoteApnsKey", defaultValue: "")
     var teamId = StorageValue<String?>(key: "teamId", defaultValue: nil)
-    var keyId = StorageValue<String>(key: "keyId", defaultValue: "")
+    var remoteKeyId = StorageValue<String>(key: "remoteKeyId", defaultValue: "")
+
+    var lfApnsKey = StorageValue<String>(key: "lfApnsKey", defaultValue: "")
+    var lfKeyId = StorageValue<String>(key: "lfKeyId", defaultValue: "")
     var bundleId = StorageValue<String>(key: "bundleId", defaultValue: "")
     var user = StorageValue<String>(key: "user", defaultValue: "")
 
@@ -29,8 +32,8 @@ class Storage {
     var mealWithBolus = StorageValue<Bool>(key: "mealWithBolus", defaultValue: false)
     var mealWithFatProtein = StorageValue<Bool>(key: "mealWithFatProtein", defaultValue: false)
 
-    var cachedJWT = StorageValue<String?>(key: "cachedJWT", defaultValue: nil)
-    var jwtExpirationDate = StorageValue<Date?>(key: "jwtExpirationDate", defaultValue: nil)
+    // TODO: This flag can be deleted in March 2027. Check the commit for other places to cleanup.
+    var hasSeenFatProteinOrderChange = StorageValue<Bool>(key: "hasSeenFatProteinOrderChange", defaultValue: true)
 
     var backgroundRefreshType = StorageValue<BackgroundRefreshType>(key: "backgroundRefreshType", defaultValue: .silentTune)
 
@@ -40,9 +43,14 @@ class Storage {
 
     var contactTrend = StorageValue<ContactIncludeOption>(key: "contactTrend", defaultValue: .off)
     var contactDelta = StorageValue<ContactIncludeOption>(key: "contactDelta", defaultValue: .off)
+    var contactIOB = StorageValue<ContactIncludeOption>(key: "contactIOB", defaultValue: .off)
+    var contactTrendTarget = StorageValue<ContactType>(key: "contactTrendTarget", defaultValue: .BG)
+    var contactDeltaTarget = StorageValue<ContactType>(key: "contactDeltaTarget", defaultValue: .BG)
+    var contactIOBTarget = StorageValue<ContactType>(key: "contactIOBTarget", defaultValue: .BG)
     var contactEnabled = StorageValue<Bool>(key: "contactEnabled", defaultValue: false)
     var contactBackgroundColor = StorageValue<String>(key: "contactBackgroundColor", defaultValue: ContactColorOption.black.rawValue)
     var contactTextColor = StorageValue<String>(key: "contactTextColor", defaultValue: ContactColorOption.white.rawValue)
+    var contactColorMode = StorageValue<ContactColorMode>(key: "contactColorMode", defaultValue: .staticColor)
 
     var sensorScheduleOffset = StorageValue<Double?>(key: "sensorScheduleOffset", defaultValue: nil)
 
@@ -56,6 +64,7 @@ class Storage {
     var lastRecBolusNotified = StorageValue<Double?>(key: "lastRecBolusNotified", defaultValue: nil)
     var lastCOBNotified = StorageValue<Double?>(key: "lastCOBNotified", defaultValue: nil)
     var lastMissedBolusNotified = StorageValue<Date?>(key: "lastMissedBolusNotified", defaultValue: nil)
+    var pendingFutureCarbs = StorageValue<[PendingFutureCarb]>(key: "pendingFutureCarbs", defaultValue: [])
 
     // General Settings [BEGIN]
     var appBadge = StorageValue<Bool>(key: "appBadge", defaultValue: true)
@@ -80,6 +89,37 @@ class Storage {
     var speakLanguage = StorageValue<String>(key: "speakLanguage", defaultValue: "en")
     // General Settings [END]
 
+    // Live Activity glucose state
+    var lastBgReadingTimeSeconds = StorageValue<TimeInterval?>(key: "lastBgReadingTimeSeconds", defaultValue: nil)
+    var lastDeltaMgdl = StorageValue<Double?>(key: "lastDeltaMgdl", defaultValue: nil)
+    var lastTrendCode = StorageValue<String?>(key: "lastTrendCode", defaultValue: nil)
+    var lastIOB = StorageValue<Double?>(key: "lastIOB", defaultValue: nil)
+    var lastCOB = StorageValue<Double?>(key: "lastCOB", defaultValue: nil)
+    var projectedBgMgdl = StorageValue<Double?>(key: "projectedBgMgdl", defaultValue: nil)
+
+    // Live Activity extended InfoType data
+    var lastBasal = StorageValue<String>(key: "lastBasal", defaultValue: "")
+    var lastPumpReservoirU = StorageValue<Double?>(key: "lastPumpReservoirU", defaultValue: nil)
+    var lastAutosens = StorageValue<Double?>(key: "lastAutosens", defaultValue: nil)
+    var lastTdd = StorageValue<Double?>(key: "lastTdd", defaultValue: nil)
+    var lastTargetLowMgdl = StorageValue<Double?>(key: "lastTargetLowMgdl", defaultValue: nil)
+    var lastTargetHighMgdl = StorageValue<Double?>(key: "lastTargetHighMgdl", defaultValue: nil)
+    var lastIsfMgdlPerU = StorageValue<Double?>(key: "lastIsfMgdlPerU", defaultValue: nil)
+    var lastCarbRatio = StorageValue<Double?>(key: "lastCarbRatio", defaultValue: nil)
+    var lastCarbsToday = StorageValue<Double?>(key: "lastCarbsToday", defaultValue: nil)
+    var lastProfileName = StorageValue<String>(key: "lastProfileName", defaultValue: "")
+    var iageInsertTime = StorageValue<TimeInterval>(key: "iageInsertTime", defaultValue: 0)
+    var lastMinBgMgdl = StorageValue<Double?>(key: "lastMinBgMgdl", defaultValue: nil)
+    var lastMaxBgMgdl = StorageValue<Double?>(key: "lastMaxBgMgdl", defaultValue: nil)
+
+    // Live Activity
+    var laEnabled = StorageValue<Bool>(key: "laEnabled", defaultValue: false)
+    var laRenewBy = StorageValue<TimeInterval>(key: "laRenewBy", defaultValue: 0)
+    var laRenewalFailed = StorageValue<Bool>(key: "laRenewalFailed", defaultValue: false)
+    var laPushToStartToken = StorageValue<String>(key: "laPushToStartToken", defaultValue: "")
+    var laLastPushToStartAt = StorageValue<TimeInterval>(key: "laLastPushToStartAt", defaultValue: 0)
+    var laPushToStartBackoff = StorageValue<TimeInterval>(key: "laPushToStartBackoff", defaultValue: 0)
+
     // Graph Settings [BEGIN]
     var showDots = StorageValue<Bool>(key: "showDots", defaultValue: true)
     var showLines = StorageValue<Bool>(key: "showLines", defaultValue: true)
@@ -93,11 +133,14 @@ class Storage {
 
     var smallGraphHeight = StorageValue<Int>(key: "smallGraphHeight", defaultValue: 40)
     var predictionToLoad = StorageValue<Double>(key: "predictionToLoad", defaultValue: 1.0)
+    var predictionDisplayType = StorageValue<PredictionDisplayType>(key: "predictionDisplayType", defaultValue: .cone)
     var minBasalScale = StorageValue<Double>(key: "minBasalScale", defaultValue: 5.0)
     var minBGScale = StorageValue<Double>(key: "minBGScale", defaultValue: 250.0)
     var lowLine = StorageValue<Double>(key: "lowLine", defaultValue: 70.0)
     var highLine = StorageValue<Double>(key: "highLine", defaultValue: 180.0)
     var downloadDays = StorageValue<Int>(key: "downloadDays", defaultValue: 1)
+    var graphTimeZoneEnabled = StorageValue<Bool>(key: "graphTimeZoneEnabled", defaultValue: false)
+    var graphTimeZoneIdentifier = StorageValue<String>(key: "graphTimeZoneIdentifier", defaultValue: TimeZone.current.identifier)
     // Graph Settings [END]
 
     // Calendar entries [BEGIN]
@@ -142,38 +185,302 @@ class Storage {
     var lastVersionUpdateNotificationShown = StorageValue<Date?>(key: "lastVersionUpdateNotificationShown", defaultValue: nil)
     var lastExpirationNotificationShown = StorageValue<Date?>(key: "lastExpirationNotificationShown", defaultValue: nil)
 
+    // MARK: - Telemetry -----------------------------------------------------------
+
+    // See LoopFollow/Helpers/Telemetry.swift.
+
+    var telemetryEnabled = StorageValue<Bool>(key: "telemetryEnabled", defaultValue: true)
+    var telemetryConsentDecisionMade = StorageValue<Bool>(key: "telemetryConsentDecisionMade", defaultValue: false)
+    var telemetryLastSentAt = StorageValue<Date?>(key: "telemetryLastSentAt", defaultValue: nil)
+    var telemetryLastSentSha = StorageValue<String>(key: "telemetryLastSentSha", defaultValue: "")
+
+    // Sliding 7-day window of cold-launch timestamps.
+    var telemetryColdLaunchTimes = StorageValue<[Date]>(key: "telemetryColdLaunchTimes", defaultValue: [])
+
     var hideInfoTable = StorageValue<Bool>(key: "hideInfoTable", defaultValue: false)
     var token = StorageValue<String>(key: "token", defaultValue: "")
     var units = StorageValue<String>(key: "units", defaultValue: "mg/dL")
+    var hasConfiguredUnits = StorageValue<Bool>(key: "hasConfiguredUnits", defaultValue: false)
 
-    var infoSort = StorageValue<[Int]>(key: "infoSort", defaultValue: InfoType.allCases.map { $0.sortOrder })
-    var infoVisible = StorageValue<[Bool]>(key: "infoVisible", defaultValue: InfoType.allCases.map { $0.defaultVisible })
+    var infoSort = StorageValue<[Int]>(key: "infoSort", defaultValue: InfoType.allCases.map(\.sortOrder))
+    var infoVisible = StorageValue<[Bool]>(key: "infoVisible", defaultValue: InfoType.allCases.map(\.defaultVisible))
 
     var url = StorageValue<String>(key: "url", defaultValue: "")
     var device = StorageValue<String>(key: "device", defaultValue: "")
     var nsWriteAuth = StorageValue<Bool>(key: "nsWriteAuth", defaultValue: false)
     var nsAdminAuth = StorageValue<Bool>(key: "nsAdminAuth", defaultValue: false)
 
-    var migrationStep = StorageValue<Int>(key: "migrationStep", defaultValue: 0)
+    // When adding a new migration step in `runMigrationsIfNeeded()`, bump this default
+    // to the new latest step number so fresh installs skip all migrations. Other defaults
+    // in this file must reflect the post-migration final state for a fresh install.
+    var migrationStep = StorageValue<Int>(key: "migrationStep", defaultValue: 7)
 
     var persistentNotification = StorageValue<Bool>(key: "persistentNotification", defaultValue: false)
     var persistentNotificationLastBGTime = StorageValue<Date>(key: "persistentNotificationLastBGTime", defaultValue: .distantPast)
 
     var lastLoopingChecked = StorageValue<Date?>(key: "lastLoopingChecked", defaultValue: nil)
     var lastBGChecked = StorageValue<Date?>(key: "lastBGChecked", defaultValue: nil)
+    var lastLoopTime = StorageValue<TimeInterval>(key: "lastLoopTime", defaultValue: 0)
 
+    // Tab positions - which position each item is in (positions 1-4 are customizable, 5 is always Menu)
+    var homePosition = StorageValue<TabPosition>(key: "homePosition", defaultValue: .position1)
     var alarmsPosition = StorageValue<TabPosition>(key: "alarmsPosition", defaultValue: .position2)
-    var remotePosition = StorageValue<TabPosition>(key: "remotePosition", defaultValue: .more)
+    var snoozerPosition = StorageValue<TabPosition>(key: "snoozerPosition", defaultValue: .position3)
     var nightscoutPosition = StorageValue<TabPosition>(key: "nightscoutPosition", defaultValue: .position4)
+    var remotePosition = StorageValue<TabPosition>(key: "remotePosition", defaultValue: .menu)
+    var statisticsPosition = StorageValue<TabPosition>(key: "statisticsPosition", defaultValue: .menu)
+    var treatmentsPosition = StorageValue<TabPosition>(key: "treatmentsPosition", defaultValue: .menu)
 
     var loopAPNSQrCodeURL = StorageValue<String>(key: "loopAPNSQrCodeURL", defaultValue: "")
 
-    var returnApnsKey = StorageValue<String>(key: "returnApnsKey", defaultValue: "")
-    var returnKeyId = StorageValue<String>(key: "returnKeyId", defaultValue: "")
-
     var bolusIncrement = SecureStorageValue<HKQuantity>(key: "bolusIncrement", defaultValue: HKQuantity(unit: .internationalUnit(), doubleValue: 0.05))
     var bolusIncrementDetected = StorageValue<Bool>(key: "bolusIncrementDetected", defaultValue: false)
+    // Statistics display preferences
+    var showGMI = StorageValue<Bool>(key: "showGMI", defaultValue: true)
+    var showStdDev = StorageValue<Bool>(key: "showStdDev", defaultValue: true)
+    var showTITR = StorageValue<Bool>(key: "showTITR", defaultValue: false)
+    var timeInRangeModeRaw = StorageValue<String>(key: "timeInRangeMode", defaultValue: "TIR")
 
     static let shared = Storage()
     private init() {}
+
+    /// Set to true at launch if isProtectedDataAvailable was false (BFU state).
+    /// Consumed and cleared on the first foreground after that launch.
+    var needsBFUReload = false
+
+    /// Re-reads every StorageValue from UserDefaults, firing @Published only where the value
+    /// actually changed. Call this when foregrounding after a Before-First-Unlock (BFU) background
+    /// launch, where Storage was initialized while UserDefaults was encrypted and all values were
+    /// cached as their defaults.
+    ///
+    /// `migrationStep` is intentionally excluded: viewDidLoad writes it to the latest step during
+    /// the BFU launch; if we reloaded it and the flush had somehow not landed yet, migrations would re-run.
+    ///
+    /// SecureStorageValue properties (maxBolus, maxCarbs, maxProtein, maxFat, bolusIncrement) are
+    /// not covered here — SecureStorageValue does not implement reload() and Keychain has the same
+    /// BFU inaccessibility; that is a separate problem.
+    func reloadAll() {
+        remoteType.reload()
+        deviceToken.reload()
+        expirationDate.reload()
+        sharedSecret.reload()
+        productionEnvironment.reload()
+        remoteApnsKey.reload()
+        teamId.reload()
+        remoteKeyId.reload()
+
+        lfApnsKey.reload()
+        lfKeyId.reload()
+        bundleId.reload()
+        user.reload()
+
+        mealWithBolus.reload()
+        mealWithFatProtein.reload()
+        hasSeenFatProteinOrderChange.reload()
+
+        backgroundRefreshType.reload()
+        selectedBLEDevice.reload()
+        debugLogLevel.reload()
+
+        contactTrend.reload()
+        contactDelta.reload()
+        contactEnabled.reload()
+        contactBackgroundColor.reload()
+        contactTextColor.reload()
+
+        sensorScheduleOffset.reload()
+        alarms.reload()
+        alarmConfiguration.reload()
+
+        lastOverrideStartNotified.reload()
+        lastOverrideEndNotified.reload()
+        lastTempTargetStartNotified.reload()
+        lastTempTargetEndNotified.reload()
+        lastRecBolusNotified.reload()
+        lastCOBNotified.reload()
+        lastMissedBolusNotified.reload()
+
+        appBadge.reload()
+        colorBGText.reload()
+        appearanceMode.reload()
+        showStats.reload()
+        useIFCC.reload()
+        showSmallGraph.reload()
+        screenlockSwitchState.reload()
+        showDisplayName.reload()
+        snoozerEmoji.reload()
+        forcePortraitMode.reload()
+
+        speakBG.reload()
+        speakBGAlways.reload()
+        speakLowBG.reload()
+        speakProactiveLowBG.reload()
+        speakFastDropDelta.reload()
+        speakLowBGLimit.reload()
+        speakHighBGLimit.reload()
+        speakHighBG.reload()
+        speakLanguage.reload()
+
+        lastBgReadingTimeSeconds.reload()
+        lastDeltaMgdl.reload()
+        lastTrendCode.reload()
+        lastIOB.reload()
+        lastCOB.reload()
+        projectedBgMgdl.reload()
+
+        lastBasal.reload()
+        lastPumpReservoirU.reload()
+        lastAutosens.reload()
+        lastTdd.reload()
+        lastTargetLowMgdl.reload()
+        lastTargetHighMgdl.reload()
+        lastIsfMgdlPerU.reload()
+        lastCarbRatio.reload()
+        lastCarbsToday.reload()
+        lastProfileName.reload()
+        iageInsertTime.reload()
+        lastMinBgMgdl.reload()
+        lastMaxBgMgdl.reload()
+
+        laEnabled.reload()
+        laRenewBy.reload()
+        laRenewalFailed.reload()
+        laPushToStartToken.reload()
+        laLastPushToStartAt.reload()
+        laPushToStartBackoff.reload()
+
+        showDots.reload()
+        showLines.reload()
+        showValues.reload()
+        showAbsorption.reload()
+        showDIALines.reload()
+        show30MinLine.reload()
+        show90MinLine.reload()
+        showMidnightLines.reload()
+        smallGraphTreatments.reload()
+        smallGraphHeight.reload()
+        predictionToLoad.reload()
+        predictionDisplayType.reload()
+        minBasalScale.reload()
+        minBGScale.reload()
+        lowLine.reload()
+        highLine.reload()
+        downloadDays.reload()
+        graphTimeZoneEnabled.reload()
+        graphTimeZoneIdentifier.reload()
+
+        writeCalendarEvent.reload()
+        calendarIdentifier.reload()
+        watchLine1.reload()
+        watchLine2.reload()
+
+        shareUserName.reload()
+        sharePassword.reload()
+        shareServer.reload()
+
+        chartScaleX.reload()
+
+        downloadTreatments.reload()
+        downloadPrediction.reload()
+        graphOtherTreatments.reload()
+        graphBasal.reload()
+        graphBolus.reload()
+        graphCarbs.reload()
+        bgUpdateDelay.reload()
+
+        cageInsertTime.reload()
+        sageInsertTime.reload()
+
+        cachedForVersion.reload()
+        latestVersion.reload()
+        latestVersionChecked.reload()
+        currentVersionBlackListed.reload()
+        lastBlacklistNotificationShown.reload()
+        lastVersionUpdateNotificationShown.reload()
+        lastExpirationNotificationShown.reload()
+
+        hideInfoTable.reload()
+        token.reload()
+        units.reload()
+        infoSort.reload()
+        infoVisible.reload()
+
+        url.reload()
+        device.reload()
+        nsWriteAuth.reload()
+        nsAdminAuth.reload()
+
+        // migrationStep intentionally excluded — see method comment above.
+
+        persistentNotification.reload()
+        persistentNotificationLastBGTime.reload()
+
+        lastLoopingChecked.reload()
+        lastBGChecked.reload()
+        lastLoopTime.reload()
+
+        homePosition.reload()
+        alarmsPosition.reload()
+        snoozerPosition.reload()
+        nightscoutPosition.reload()
+        remotePosition.reload()
+        statisticsPosition.reload()
+        treatmentsPosition.reload()
+
+        loopAPNSQrCodeURL.reload()
+        bolusIncrementDetected.reload()
+        showGMI.reload()
+        showStdDev.reload()
+        showTITR.reload()
+        timeInRangeModeRaw.reload()
+    }
+
+    // MARK: - Tab Position Helpers
+
+    /// Get the position for a given tab item
+    func position(for item: TabItem) -> TabPosition {
+        switch item {
+        case .home: homePosition.value
+        case .alarms: alarmsPosition.value
+        case .remote: remotePosition.value
+        case .nightscout: nightscoutPosition.value
+        case .snoozer: snoozerPosition.value
+        case .stats: statisticsPosition.value
+        case .treatments: treatmentsPosition.value
+        }
+    }
+
+    /// Set the position for a given tab item
+    func setPosition(_ position: TabPosition, for item: TabItem) {
+        switch item {
+        case .home: homePosition.value = position
+        case .alarms: alarmsPosition.value = position
+        case .remote: remotePosition.value = position
+        case .nightscout: nightscoutPosition.value = position
+        case .snoozer: snoozerPosition.value = position
+        case .stats: statisticsPosition.value = position
+        case .treatments: treatmentsPosition.value = position
+        }
+    }
+
+    /// Get the tab item at a specific position (nil if no item at that position)
+    func tabItem(at position: TabPosition) -> TabItem? {
+        for item in TabItem.allCases {
+            // Use normalized comparison to handle legacy values (.more, .disabled -> .menu)
+            if self.position(for: item).normalized == position.normalized {
+                return item
+            }
+        }
+        return nil
+    }
+
+    /// Get all items in the Menu (position 5)
+    func itemsInMenu() -> [TabItem] {
+        TabItem.featureOrder.filter { position(for: $0).normalized == .menu }
+    }
+
+    /// Get items ordered by their position in the tab bar (positions 1-4)
+    func orderedTabBarItems() -> [TabItem] {
+        TabPosition.customizablePositions.compactMap { tabItem(at: $0) }
+    }
 }

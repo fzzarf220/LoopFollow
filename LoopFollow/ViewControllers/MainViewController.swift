@@ -15,12 +15,17 @@ func IsNightscoutEnabled() -> Bool {
     return !Storage.shared.url.value.isEmpty
 }
 
-private enum SecondTab {
-    case remote
-    case alarms
+private struct APNSCredentialSnapshot: Equatable {
+    let remoteApnsKey: String
+    let teamId: String?
+    let remoteKeyId: String
+    let lfApnsKey: String
+    let lfKeyId: String
 }
 
 class MainViewController: UIViewController, UITableViewDataSource, ChartViewDelegate, UNUserNotificationCenterDelegate, UIScrollViewDelegate {
+    var isPresentedAsModal: Bool = false
+
     @IBOutlet var BGText: UILabel!
     @IBOutlet var DeltaText: UILabel!
     @IBOutlet var DirectionText: UILabel!
@@ -37,7 +42,9 @@ class MainViewController: UIViewController, UITableViewDataSource, ChartViewDele
     @IBOutlet var statsInRangePercent: UILabel!
     @IBOutlet var statsHighPercent: UILabel!
     @IBOutlet var statsAvgBG: UILabel!
+    @IBOutlet var statsEstA1CTitle: UILabel!
     @IBOutlet var statsEstA1C: UILabel!
+    @IBOutlet var statsStdDevTitle: UILabel!
     @IBOutlet var statsStdDev: UILabel!
     @IBOutlet var serverText: UILabel!
     @IBOutlet var statsView: UIView!
@@ -76,9 +83,18 @@ class MainViewController: UIViewController, UITableViewDataSource, ChartViewDele
     var bolusData: [bolusGraphStruct] = []
     var smbData: [bolusGraphStruct] = []
     var carbData: [carbGraphStruct] = []
+
+    // Stats-specific data storage (can hold up to 30 days)
+    var statsBGData: [ShareGlucoseData] = []
+    var statsBolusData: [bolusGraphStruct] = []
+    var statsSMBData: [bolusGraphStruct] = []
+    var statsCarbData: [carbGraphStruct] = []
+    var statsBasalData: [basalGraphStruct] = []
     var overrideGraphData: [DataStructs.overrideStruct] = []
     var tempTargetGraphData: [DataStructs.tempTargetStruct] = []
     var predictionData: [ShareGlucoseData] = []
+    var openAPSPredBGs: [String: [Double]]?
+    var openAPSPredUpdatedTime: TimeInterval?
     var bgCheckData: [ShareGlucoseData] = []
     var suspendGraphData: [DataStructs.timestampOnlyStruct] = []
     var resumeGraphData: [DataStructs.timestampOnlyStruct] = []
@@ -121,6 +137,7 @@ class MainViewController: UIViewController, UITableViewDataSource, ChartViewDele
     let contactImageUpdater = ContactImageUpdater()
 
     private var cancellables = Set<AnyCancellable>()
+    private var isViewHierarchyReady = false
 
     // Loading state management
     private var loadingOverlay: UIView?
@@ -137,20 +154,8 @@ class MainViewController: UIViewController, UITableViewDataSource, ChartViewDele
 
         loadDebugData()
 
-        if Storage.shared.migrationStep.value < 1 {
-            Storage.shared.migrateStep1()
-            Storage.shared.migrationStep.value = 1
-        }
-
-        if Storage.shared.migrationStep.value < 2 {
-            Storage.shared.migrateStep2()
-            Storage.shared.migrationStep.value = 2
-        }
-
-        if Storage.shared.migrationStep.value < 3 {
-            Storage.shared.migrateStep3()
-            Storage.shared.migrationStep.value = 3
-        }
+        // Migrations run in foreground only — see runMigrationsIfNeeded() for details.
+        runMigrationsIfNeeded()
 
         // Synchronize info types to ensure arrays are the correct size
         synchronizeInfoTypes()
@@ -175,6 +180,10 @@ class MainViewController: UIViewController, UITableViewDataSource, ChartViewDele
         updateGraphVisibility()
         statsView.isHidden = !Storage.shared.showStats.value
 
+        // Tap on stats view to open full statistics screen
+        let statsTap = UITapGestureRecognizer(target: self, action: #selector(statsViewTapped))
+        statsView.addGestureRecognizer(statsTap)
+
         BGChart.delegate = self
         BGChartFull.delegate = self
 
@@ -185,6 +194,14 @@ class MainViewController: UIViewController, UITableViewDataSource, ChartViewDele
         let notificationCenter = NotificationCenter.default
         notificationCenter.addObserver(self, selector: #selector(appMovedToBackground), name: UIApplication.didEnterBackgroundNotification, object: nil)
         notificationCenter.addObserver(self, selector: #selector(appCameToForeground), name: UIApplication.willEnterForegroundNotification, object: nil)
+        // didBecomeActive is used (not willEnterForeground) to ensure applicationState == .active
+        // when runMigrationsIfNeeded() is called. This catches migrations deferred by a
+        // background BGAppRefreshTask launch in Before-First-Unlock state.
+        notificationCenter.addObserver(self, selector: #selector(appDidBecomeActive), name: UIApplication.didBecomeActiveNotification, object: nil)
+
+        #if !targetEnvironment(macCatalyst)
+            notificationCenter.addObserver(self, selector: #selector(navigateOnLAForeground), name: .liveActivityDidForeground, object: nil)
+        #endif
 
         // Setup the Graph
         if firstGraphLoad {
@@ -213,8 +230,6 @@ class MainViewController: UIViewController, UITableViewDataSource, ChartViewDele
         refreshControl = UIRefreshControl()
         refreshControl.addTarget(self, action: #selector(refresh), for: .valueChanged)
         refreshScrollView.addSubview(refreshControl)
-
-        // Add this line to prevent scrolling in other directions
         refreshScrollView.alwaysBounceVertical = true
 
         refreshScrollView.delegate = self
@@ -246,16 +261,19 @@ class MainViewController: UIViewController, UITableViewDataSource, ChartViewDele
             .receive(on: DispatchQueue.main)
             .compactMap { $0 }
             .sink { [weak self] _ in
-                if let snoozerIndex = self?.getSnoozerTabIndex() {
-                    self?.tabBarController?.selectedIndex = snoozerIndex
-                }
+                guard let self = self,
+                      let tabBarController = self.tabBarController,
+                      let vcs = tabBarController.viewControllers, !vcs.isEmpty,
+                      let snoozerIndex = self.getSnoozerTabIndex(),
+                      snoozerIndex < vcs.count else { return }
+                tabBarController.selectedIndex = snoozerIndex
             }
             .store(in: &cancellables)
 
         Storage.shared.colorBGText.$value
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
-                self?.setBGTextColor()
+                self?.updateBGTextAppearance()
             }
             .store(in: &cancellables)
 
@@ -274,10 +292,23 @@ class MainViewController: UIViewController, UITableViewDataSource, ChartViewDele
             }
             .store(in: &cancellables)
 
-        Storage.shared.useIFCC.$value
+        Publishers.MergeMany(
+            Storage.shared.units.$value.map { _ in () }.eraseToAnyPublisher(),
+            Storage.shared.useIFCC.$value.map { _ in () }.eraseToAnyPublisher(),
+            Storage.shared.showGMI.$value.map { _ in () }.eraseToAnyPublisher(),
+            Storage.shared.showStdDev.$value.map { _ in () }.eraseToAnyPublisher()
+        )
+        .receive(on: DispatchQueue.main)
+        .sink { [weak self] _ in
+            self?.updateStats()
+        }
+        .store(in: &cancellables)
+
+        Storage.shared.timeInRangeModeRaw.$value
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
-                self?.updateStats()
+                self?.updateBGGraphSettings()
+                self?.updateBGGraph()
             }
             .store(in: &cancellables)
 
@@ -302,6 +333,20 @@ class MainViewController: UIViewController, UITableViewDataSource, ChartViewDele
             }
             .store(in: &cancellables)
 
+        Storage.shared.graphTimeZoneEnabled.$value
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.infoTable.reloadData()
+            }
+            .store(in: &cancellables)
+
+        Storage.shared.graphTimeZoneIdentifier.$value
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.infoTable.reloadData()
+            }
+            .store(in: &cancellables)
+
         Storage.shared.speakBG.$value
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
@@ -309,26 +354,21 @@ class MainViewController: UIViewController, UITableViewDataSource, ChartViewDele
             }
             .store(in: &cancellables)
 
-        Storage.shared.alarmsPosition.$value
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in
-                self?.setupTabBar()
-            }
-            .store(in: &cancellables)
-
-        Storage.shared.remotePosition.$value
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in
-                self?.setupTabBar()
-            }
-            .store(in: &cancellables)
-
-        Storage.shared.nightscoutPosition.$value
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in
-                self?.setupTabBar()
-            }
-            .store(in: &cancellables)
+        // Observe all tab position changes with debouncing to handle batch updates
+        Publishers.MergeMany(
+            Storage.shared.homePosition.$value.map { _ in () }.eraseToAnyPublisher(),
+            Storage.shared.alarmsPosition.$value.map { _ in () }.eraseToAnyPublisher(),
+            Storage.shared.remotePosition.$value.map { _ in () }.eraseToAnyPublisher(),
+            Storage.shared.nightscoutPosition.$value.map { _ in () }.eraseToAnyPublisher(),
+            Storage.shared.snoozerPosition.$value.map { _ in () }.eraseToAnyPublisher(),
+            Storage.shared.statisticsPosition.$value.map { _ in () }.eraseToAnyPublisher(),
+            Storage.shared.treatmentsPosition.$value.map { _ in () }.eraseToAnyPublisher()
+        )
+        .debounce(for: .milliseconds(100), scheduler: DispatchQueue.main)
+        .sink { [weak self] _ in
+            self?.setupTabBar()
+        }
+        .store(in: &cancellables)
 
         Storage.shared.url.$value
             .receive(on: DispatchQueue.main)
@@ -359,29 +399,27 @@ class MainViewController: UIViewController, UITableViewDataSource, ChartViewDele
             }
             .store(in: &cancellables)
 
-        Storage.shared.apnsKey.$value
-            .receive(on: DispatchQueue.main)
-            .removeDuplicates()
-            .sink { _ in
-                JWTManager.shared.invalidateCache()
-            }
-            .store(in: &cancellables)
-
-        Storage.shared.teamId.$value
-            .receive(on: DispatchQueue.main)
-            .removeDuplicates()
-            .sink { _ in
-                JWTManager.shared.invalidateCache()
-            }
-            .store(in: &cancellables)
-
-        Storage.shared.keyId.$value
-            .receive(on: DispatchQueue.main)
-            .removeDuplicates()
-            .sink { _ in
-                JWTManager.shared.invalidateCache()
-            }
-            .store(in: &cancellables)
+        Publishers.CombineLatest4(
+            Storage.shared.remoteApnsKey.$value,
+            Storage.shared.teamId.$value,
+            Storage.shared.remoteKeyId.$value,
+            Storage.shared.lfApnsKey.$value
+        )
+        .combineLatest(Storage.shared.lfKeyId.$value)
+        .map { values, lfKeyId in
+            APNSCredentialSnapshot(
+                remoteApnsKey: values.0,
+                teamId: values.1,
+                remoteKeyId: values.2,
+                lfApnsKey: values.3,
+                lfKeyId: lfKeyId
+            )
+        }
+        .removeDuplicates()
+        .dropFirst()
+        .debounce(for: .milliseconds(500), scheduler: DispatchQueue.main)
+        .sink { _ in JWTManager.shared.invalidateCache() }
+        .store(in: &cancellables)
 
         Storage.shared.device.$value
             .receive(on: DispatchQueue.main)
@@ -404,8 +442,28 @@ class MainViewController: UIViewController, UITableViewDataSource, ChartViewDele
             }
             .store(in: &cancellables)
 
+        Storage.shared.device.$value
+            .receive(on: DispatchQueue.main)
+            .map { device -> Bool? in
+                device.isEmpty ? nil : (device == "Loop")
+            }
+            .removeDuplicates()
+            .dropFirst()
+            .sink { [weak self] isLoop in
+                guard let isLoop = isLoop else { return }
+                Storage.shared.predictionDisplayType.value = isLoop ? .lines : .cone
+                self?.updateOpenAPSPredictionDisplay()
+            }
+            .store(in: &cancellables)
+
         updateQuickActions()
-        setupTabBar()
+
+        // Delay initial tab setup to ensure view hierarchy is ready
+        // This prevents crashes when trying to modify tabs during viewWillAppear
+        DispatchQueue.main.async { [weak self] in
+            self?.isViewHierarchyReady = true
+            self?.setupTabBar()
+        }
 
         speechSynthesizer.delegate = self
 
@@ -520,80 +578,178 @@ class MainViewController: UIViewController, UITableViewDataSource, ChartViewDele
     }
 
     private func setupTabBar() {
-        guard let tabBarController = tabBarController else { return }
+        guard isViewHierarchyReady else { return }
 
-        // Store current selection before making changes
-        let currentSelectedIndex = tabBarController.selectedIndex
+        guard !isPresentedAsModal else { return }
 
-        // Check if we need to handle More tab disappearing
-        let wasInMoreTab = currentSelectedIndex == 4 &&
-            tabBarController.viewControllers?.last is MoreMenuViewController
-        let willHaveMoreTab = hasItemsInMore()
-
-        // If currently in More tab and it's going away, we need to handle this carefully
-        if wasInMoreTab, !willHaveMoreTab {
-            // First, dismiss any modals that might be open
-            if let presented = tabBarController.presentedViewController {
-                presented.dismiss(animated: false) { [weak self] in
-                    // After dismissal, rebuild tabs with home selected
-                    self?.rebuildTabs(tabBarController: tabBarController,
-                                      willHaveMoreTab: willHaveMoreTab,
-                                      selectedIndex: 0)
-                }
-                return
+        var tbc = tabBarController
+        if tbc == nil {
+            if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+               let window = windowScene.windows.first,
+               let rootVC = window.rootViewController as? UITabBarController
+            {
+                tbc = rootVC
             }
         }
 
-        // For all other cases, rebuild tabs normally
-        rebuildTabs(tabBarController: tabBarController,
-                    willHaveMoreTab: willHaveMoreTab,
-                    selectedIndex: wasInMoreTab && !willHaveMoreTab ? 0 : currentSelectedIndex)
+        guard let tabBarController = tbc else { return }
+
+        // If settings modal is presented, skip rebuild - it will happen when settings is dismissed
+        if tabBarController.presentedViewController != nil {
+            return
+        }
+
+        rebuildTabs(tabBarController: tabBarController)
     }
 
-    private func rebuildTabs(tabBarController: UITabBarController,
-                             willHaveMoreTab: Bool,
-                             selectedIndex: Int)
-    {
+    /// Static method to rebuild tabs from anywhere in the app
+    /// This is useful when the MainViewController instance may not be in the tab bar
+    static func rebuildTabsIfNeeded() {
+        guard let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+              let window = windowScene.windows.first,
+              let tabBarController = window.rootViewController as? UITabBarController
+        else { return }
+
+        let previousSelectedIndex = tabBarController.selectedIndex
+
         let storyboard = UIStoryboard(name: "Main", bundle: nil)
         var viewControllers: [UIViewController] = []
 
-        // Tab 0 - Home (always)
-        viewControllers.append(self)
+        let orderedItems = Storage.shared.orderedTabBarItems()
 
-        // Tab 1 - Dynamic based on what's assigned to position2
-        if let vc = createViewController(for: .position2, storyboard: storyboard) {
-            viewControllers.append(vc)
+        for (index, item) in orderedItems.prefix(4).enumerated() {
+            let position = TabPosition.customizablePositions[index]
+            if let vc = createViewControllerStatic(for: item, position: position, storyboard: storyboard) {
+                viewControllers.append(vc)
+            }
         }
 
-        // Tab 2 - Snoozer (always)
-        let snoozerVC = storyboard.instantiateViewController(withIdentifier: "SnoozerViewController")
-        snoozerVC.tabBarItem = UITabBarItem(title: "Snoozer", image: UIImage(systemName: "zzz"), tag: 2)
-        viewControllers.append(snoozerVC)
-
-        // Tab 3 - Dynamic based on what's assigned to position4
-        if let vc = createViewController(for: .position4, storyboard: storyboard) {
-            viewControllers.append(vc)
-        }
-
-        // Tab 4 - Settings or More
-        if willHaveMoreTab {
-            let moreVC = MoreMenuViewController()
-            moreVC.tabBarItem = UITabBarItem(title: "More", image: UIImage(systemName: "ellipsis"), tag: 4)
-            viewControllers.append(moreVC)
+        // Preserve existing Menu nav controller to keep its push stack intact
+        let existingMenuNav = (tabBarController.viewControllers ?? []).first(where: {
+            $0.tabBarItem.title == "Menu"
+        })
+        if let menuNav = existingMenuNav {
+            menuNav.tabBarItem = UITabBarItem(title: "Menu", image: UIImage(systemName: "line.3.horizontal"), tag: 4)
+            viewControllers.append(menuNav)
         } else {
-            let settingsVC = SettingsViewController()
-            settingsVC.tabBarItem = UITabBarItem(title: "Settings", image: UIImage(systemName: "gear"), tag: 4)
-            viewControllers.append(settingsVC)
+            viewControllers.append(Self.makeMenuViewController(tag: 4))
         }
 
-        // Update view controllers without animation to prevent glitches
+        if let presented = tabBarController.presentedViewController {
+            presented.dismiss(animated: false) {
+                tabBarController.setViewControllers(viewControllers, animated: false)
+                guard !viewControllers.isEmpty else { return }
+                let targetIndex = min(previousSelectedIndex, viewControllers.count - 1)
+                tabBarController.selectedIndex = targetIndex
+            }
+        } else {
+            tabBarController.setViewControllers(viewControllers, animated: false)
+            guard !viewControllers.isEmpty else { return }
+            let targetIndex = min(previousSelectedIndex, viewControllers.count - 1)
+            tabBarController.selectedIndex = targetIndex
+        }
+    }
+
+    /// Static helper to create view controllers
+    private static func createViewControllerStatic(for item: TabItem, position: TabPosition, storyboard: UIStoryboard) -> UIViewController? {
+        let tag = position.tabIndex ?? 0
+
+        switch item {
+        case .home:
+            guard let mainVC = storyboard.instantiateViewController(withIdentifier: "MainViewController") as? MainViewController else {
+                return nil
+            }
+            mainVC.tabBarItem = UITabBarItem(title: "Home", image: UIImage(systemName: item.icon), tag: tag)
+            return mainVC
+
+        case .alarms:
+            let vc = storyboard.instantiateViewController(withIdentifier: "AlarmViewController")
+            vc.tabBarItem = UITabBarItem(title: item.displayName, image: UIImage(systemName: item.icon), tag: tag)
+            return vc
+
+        case .remote:
+            let vc = storyboard.instantiateViewController(withIdentifier: "RemoteViewController")
+            vc.tabBarItem = UITabBarItem(title: item.displayName, image: UIImage(systemName: item.icon), tag: tag)
+            return vc
+
+        case .nightscout:
+            let vc = storyboard.instantiateViewController(withIdentifier: "NightscoutViewController")
+            vc.tabBarItem = UITabBarItem(title: item.displayName, image: UIImage(systemName: item.icon), tag: tag)
+            return vc
+
+        case .snoozer:
+            let vc = storyboard.instantiateViewController(withIdentifier: "SnoozerViewController")
+            vc.tabBarItem = UITabBarItem(title: item.displayName, image: UIImage(systemName: item.icon), tag: tag)
+            return vc
+
+        case .treatments:
+            let treatmentsVC = UIHostingController(rootView: TreatmentsView())
+            treatmentsVC.tabBarItem = UITabBarItem(title: item.displayName, image: UIImage(systemName: item.icon), tag: tag)
+            return treatmentsVC
+
+        case .stats:
+            let statsVC = UIHostingController(rootView: AggregatedStatsContentView(mainViewController: nil))
+            let navController = UINavigationController(rootViewController: statsVC)
+            navController.tabBarItem = UITabBarItem(title: item.displayName, image: UIImage(systemName: item.icon), tag: tag)
+            return navController
+        }
+    }
+
+    private func rebuildTabs(tabBarController: UITabBarController) {
+        let previousSelectedIndex = tabBarController.selectedIndex
+
+        let storyboard = UIStoryboard(name: "Main", bundle: nil)
+        var viewControllers: [UIViewController] = []
+
+        let orderedItems = Storage.shared.orderedTabBarItems()
+
+        for (index, item) in orderedItems.prefix(4).enumerated() {
+            let position = TabPosition.customizablePositions[index]
+            if let vc = createViewController(for: item, position: position, storyboard: storyboard) {
+                viewControllers.append(vc)
+            }
+        }
+
+        // Preserve existing Menu nav controller to keep its push stack intact
+        let existingMenuNav = (tabBarController.viewControllers ?? []).first(where: {
+            $0.tabBarItem.title == "Menu"
+        })
+        if let menuNav = existingMenuNav {
+            menuNav.tabBarItem = UITabBarItem(title: "Menu", image: UIImage(systemName: "line.3.horizontal"), tag: 4)
+            viewControllers.append(menuNav)
+        } else {
+            viewControllers.append(Self.makeMenuViewController(tag: 4))
+        }
+
         tabBarController.setViewControllers(viewControllers, animated: false)
 
-        // Restore selection if valid, otherwise default to home
-        let safeIndex = min(selectedIndex, viewControllers.count - 1)
-        tabBarController.selectedIndex = max(0, safeIndex)
+        guard !viewControllers.isEmpty else { return }
+        let targetIndex = min(previousSelectedIndex, viewControllers.count - 1)
+        tabBarController.selectedIndex = targetIndex
 
         updateNightscoutTabState()
+    }
+
+    @objc private func navigateOnLAForeground() {
+        guard let tabBarController = tabBarController,
+              let vcs = tabBarController.viewControllers, !vcs.isEmpty else { return }
+
+        let targetIndex: Int
+        if Observable.shared.currentAlarm.value != nil,
+           let snoozerIndex = getSnoozerTabIndex(), snoozerIndex < vcs.count
+        {
+            targetIndex = snoozerIndex
+        } else {
+            targetIndex = 0
+        }
+
+        if let presented = tabBarController.presentedViewController {
+            presented.dismiss(animated: false) {
+                tabBarController.selectedIndex = targetIndex
+            }
+        } else {
+            tabBarController.selectedIndex = targetIndex
+        }
     }
 
     private func getSnoozerTabIndex() -> Int? {
@@ -609,32 +765,108 @@ class MainViewController: UIViewController, UITableViewDataSource, ChartViewDele
         return nil
     }
 
-    private func createViewController(for position: TabPosition, storyboard: UIStoryboard) -> UIViewController? {
-        if Storage.shared.alarmsPosition.value == position {
-            let vc = storyboard.instantiateViewController(withIdentifier: "AlarmViewController")
-            vc.tabBarItem = UITabBarItem(title: "Alarms", image: UIImage(systemName: "alarm"), tag: position == .position2 ? 1 : 3)
-            return vc
-        }
+    @objc private func statsViewTapped() {
+        #if !targetEnvironment(macCatalyst)
+            let position = Storage.shared.position(for: .stats).normalized
+            if position != .menu, let tabIndex = position.tabIndex, let tbc = tabBarController {
+                tbc.selectedIndex = tabIndex
+                return
+            }
+        #endif
 
-        if Storage.shared.remotePosition.value == position {
-            let vc = storyboard.instantiateViewController(withIdentifier: "RemoteViewController")
-            vc.tabBarItem = UITabBarItem(title: "Remote", image: UIImage(systemName: "antenna.radiowaves.left.and.right"), tag: position == .position2 ? 1 : 3)
-            return vc
-        }
-
-        if Storage.shared.nightscoutPosition.value == position {
-            let vc = storyboard.instantiateViewController(withIdentifier: "NightscoutViewController")
-            vc.tabBarItem = UITabBarItem(title: "Nightscout", image: UIImage(systemName: "safari"), tag: position == .position2 ? 1 : 3)
-            return vc
-        }
-
-        return nil
+        let statsModalView = AggregatedStatsModalView(mainViewController: self)
+        let hostingController = UIHostingController(rootView: statsModalView)
+        hostingController.overrideUserInterfaceStyle = Storage.shared.appearanceMode.value.userInterfaceStyle
+        hostingController.modalPresentationStyle = .fullScreen
+        present(hostingController, animated: true)
     }
 
-    private func hasItemsInMore() -> Bool {
-        return Storage.shared.alarmsPosition.value == .more ||
-            Storage.shared.remotePosition.value == .more ||
-            Storage.shared.nightscoutPosition.value == .more
+    private func createViewController(for item: TabItem, position: TabPosition, storyboard: UIStoryboard) -> UIViewController? {
+        let tag = position.tabIndex ?? 0
+
+        switch item {
+        case .home:
+            tabBarItem = UITabBarItem(title: "Home", image: UIImage(systemName: item.icon), tag: tag)
+            return self
+
+        case .alarms:
+            let vc = storyboard.instantiateViewController(withIdentifier: "AlarmViewController")
+            vc.tabBarItem = UITabBarItem(title: item.displayName, image: UIImage(systemName: item.icon), tag: tag)
+            return vc
+
+        case .remote:
+            let vc = storyboard.instantiateViewController(withIdentifier: "RemoteViewController")
+            vc.tabBarItem = UITabBarItem(title: item.displayName, image: UIImage(systemName: item.icon), tag: tag)
+            return vc
+
+        case .nightscout:
+            let vc = storyboard.instantiateViewController(withIdentifier: "NightscoutViewController")
+            vc.tabBarItem = UITabBarItem(title: item.displayName, image: UIImage(systemName: item.icon), tag: tag)
+            return vc
+
+        case .snoozer:
+            let vc = storyboard.instantiateViewController(withIdentifier: "SnoozerViewController")
+            vc.tabBarItem = UITabBarItem(title: item.displayName, image: UIImage(systemName: item.icon), tag: tag)
+            return vc
+
+        case .treatments:
+            let treatmentsVC = UIHostingController(rootView: TreatmentsView())
+            treatmentsVC.tabBarItem = UITabBarItem(title: item.displayName, image: UIImage(systemName: item.icon), tag: tag)
+            return treatmentsVC
+
+        case .stats:
+            let statsVC = UIHostingController(rootView: AggregatedStatsContentView(mainViewController: self))
+            let navController = UINavigationController(rootViewController: statsVC)
+            navController.tabBarItem = UITabBarItem(title: item.displayName, image: UIImage(systemName: item.icon), tag: tag)
+            return navController
+        }
+    }
+
+    private static func makeMenuViewController(tag: Int) -> UIViewController {
+        let menuVC = MoreMenuViewController()
+        let navController = UINavigationController(rootViewController: menuVC)
+        navController.navigationBar.prefersLargeTitles = true
+        navController.tabBarItem = UITabBarItem(title: "Menu", image: UIImage(systemName: "line.3.horizontal"), tag: tag)
+        navController.overrideUserInterfaceStyle = Storage.shared.appearanceMode.value.userInterfaceStyle
+        return navController
+    }
+
+    private func createComingSoonViewController(title: String, icon: String) -> UIViewController {
+        let vc = UIViewController()
+        vc.view.backgroundColor = .systemBackground
+
+        let stackView = UIStackView()
+        stackView.axis = .vertical
+        stackView.alignment = .center
+        stackView.spacing = 16
+        stackView.translatesAutoresizingMaskIntoConstraints = false
+
+        let imageView = UIImageView(image: UIImage(systemName: icon))
+        imageView.tintColor = .secondaryLabel
+        imageView.contentMode = .scaleAspectFit
+        imageView.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            imageView.widthAnchor.constraint(equalToConstant: 60),
+            imageView.heightAnchor.constraint(equalToConstant: 60),
+        ])
+
+        let titleLabel = UILabel()
+        titleLabel.text = title
+        titleLabel.font = .preferredFont(forTextStyle: .title1)
+        titleLabel.textColor = .label
+
+        stackView.addArrangedSubview(imageView)
+        stackView.addArrangedSubview(titleLabel)
+
+        vc.view.addSubview(stackView)
+        NSLayoutConstraint.activate([
+            stackView.centerXAnchor.constraint(equalTo: vc.view.centerXAnchor),
+            stackView.centerYAnchor.constraint(equalTo: vc.view.centerYAnchor),
+        ])
+
+        vc.overrideUserInterfaceStyle = Storage.shared.appearanceMode.value.userInterfaceStyle
+
+        return vc
     }
 
     // Update the Home Screen Quick Action for toggling the "Speak BG" feature based on the current speakBG setting.
@@ -705,6 +937,7 @@ class MainViewController: UIViewController, UITableViewDataSource, ChartViewDele
 
     override func viewWillAppear(_: Bool) {
         UIApplication.shared.isIdleTimerDisabled = Storage.shared.screenlockSwitchState.value
+        infoTable.reloadData()
 
         if Observable.shared.chartSettingsChanged.value {
             updateBGGraphSettings()
@@ -716,18 +949,42 @@ class MainViewController: UIViewController, UITableViewDataSource, ChartViewDele
         }
     }
 
+    private var timeZoneOverrideInfoValue: String? {
+        guard Storage.shared.graphTimeZoneEnabled.value,
+              let overrideTimeZone = TimeZone(identifier: Storage.shared.graphTimeZoneIdentifier.value)
+        else {
+            return nil
+        }
+
+        return overrideTimeZone.identifier
+    }
+
     // Info Table Functions
     func tableView(_: UITableView, numberOfRowsInSection _: Int) -> Int {
         guard let infoManager = infoManager else {
             return 0
         }
-        return infoManager.numberOfRows()
+        let overrideRowCount = timeZoneOverrideInfoValue == nil ? 0 : 1
+        return infoManager.numberOfRows() + overrideRowCount
     }
 
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         let cell = tableView.dequeueReusableCell(withIdentifier: "LabelCell", for: indexPath)
 
-        if let values = infoManager.dataForIndexPath(indexPath) {
+        if indexPath.row == 0, let timeZoneOverrideInfoValue {
+            cell.textLabel?.text = "Time Zone"
+            cell.detailTextLabel?.text = timeZoneOverrideInfoValue
+            return cell
+        }
+
+        let adjustedIndexPath: IndexPath
+        if timeZoneOverrideInfoValue != nil {
+            adjustedIndexPath = IndexPath(row: indexPath.row - 1, section: indexPath.section)
+        } else {
+            adjustedIndexPath = indexPath
+        }
+
+        if let values = infoManager.dataForIndexPath(adjustedIndexPath) {
             cell.textLabel?.text = values.name
             cell.detailTextLabel?.text = values.value
         } else {
@@ -743,10 +1000,15 @@ class MainViewController: UIViewController, UITableViewDataSource, ChartViewDele
         UIApplication.shared.isIdleTimerDisabled = false
 
         // We want to always come back to the home screen
-        tabBarController?.selectedIndex = 0
+        if let tabBarController = tabBarController,
+           let vcs = tabBarController.viewControllers, !vcs.isEmpty
+        {
+            tabBarController.selectedIndex = 0
+        }
 
         if Storage.shared.backgroundRefreshType.value == .silentTune {
             backgroundTask.startBackgroundTask()
+            BackgroundRefreshManager.shared.scheduleRefresh()
         }
 
         if Storage.shared.backgroundRefreshType.value != .none {
@@ -754,7 +1016,104 @@ class MainViewController: UIViewController, UITableViewDataSource, ChartViewDele
         }
     }
 
+    // Migrations must only run when UserDefaults is accessible (i.e. after first unlock).
+    // When the app is launched in the background by BGAppRefreshTask immediately after a
+    // reboot, the device may be in Before-First-Unlock (BFU) state: UserDefaults files are
+    // still encrypted, so every read returns the default value (0 / ""). Running migrations
+    // in that state would overwrite real settings with empty strings.
+    //
+    // Strategy: skip migrations if applicationState == .background; call this method again
+    // from appCameToForeground() so they run on the first foreground after a BFU launch.
+    func runMigrationsIfNeeded() {
+        guard UIApplication.shared.applicationState != .background else { return }
+
+        // Capture before migrations run: true for existing users, false for fresh installs.
+        let isExistingUser = Storage.shared.migrationStep.exists
+
+        // When adding a new migration step below:
+        //   1. Bump the `migrationStep` defaultValue in Storage.swift to the new latest step
+        //      number so fresh installs skip every migration.
+        //   2. Update any other StorageValue defaults in Storage.swift that this new step
+        //      mutates, so a fresh install ends up in the same state as a migrated user.
+
+        // Step 1: Released in v3.0.0 (2025-07-07). Can be removed after 2026-07-07.
+        if Storage.shared.migrationStep.value < 1 {
+            Storage.shared.migrateStep1()
+            Storage.shared.migrationStep.value = 1
+        }
+
+        // Step 2: Released in v3.1.0 (2025-07-21). Can be removed after 2026-07-21.
+        if Storage.shared.migrationStep.value < 2 {
+            Storage.shared.migrateStep2()
+            Storage.shared.migrationStep.value = 2
+        }
+
+        // Step 3: Released in v4.5.0 (2026-02-01). Can be removed after 2027-02-01.
+        if Storage.shared.migrationStep.value < 3 {
+            Storage.shared.migrateStep3()
+            Storage.shared.migrationStep.value = 3
+        }
+
+        // Step 4: Released in v5.0.0 (2026-03-20). Can be removed after 2027-03-20.
+        if Storage.shared.migrationStep.value < 4 {
+            // Existing users need to see the fat/protein order change banner.
+            // New users never saw the old order, so mark it as already seen.
+            Storage.shared.hasSeenFatProteinOrderChange.value = !isExistingUser
+            Storage.shared.migrationStep.value = 4
+        }
+
+        // Step 5: Released in v5.0.0 (2026-03-20). Can be removed after 2027-03-20.
+        if Storage.shared.migrationStep.value < 5 {
+            Storage.shared.migrateStep5()
+            Storage.shared.migrationStep.value = 5
+        }
+
+        if Storage.shared.migrationStep.value < 6 {
+            Storage.shared.migrateStep6()
+            Storage.shared.migrationStep.value = 6
+        }
+
+        if Storage.shared.migrationStep.value < 7 {
+            Storage.shared.migrateStep7()
+            Storage.shared.migrationStep.value = 7
+        }
+
+        if Storage.shared.migrationStep.value < 8 {
+            Storage.shared.migrateStep8()
+            Storage.shared.migrationStep.value = 8
+        }
+    }
+
+    @objc func appDidBecomeActive() {
+        // applicationState == .active is guaranteed here, so the BFU guard in
+        // runMigrationsIfNeeded() will always pass. Catches the case where viewDidLoad
+        // ran during a BGAppRefreshTask background launch and deferred migrations.
+        runMigrationsIfNeeded()
+    }
+
     @objc func appCameToForeground() {
+        // If the app was cold-launched in Before-First-Unlock state (e.g. by BGAppRefreshTask
+        // after a reboot), all StorageValues were cached from encrypted UserDefaults and hold
+        // their defaults. Reload everything from disk now that the device is unlocked, firing
+        // Combine observers only for values that actually changed.
+        LogManager.shared.log(category: .general, message: "appCameToForeground: needsBFUReload=\(Storage.shared.needsBFUReload), url='\(LogRedactor.url(Storage.shared.url.value))'")
+        if Storage.shared.needsBFUReload {
+            Storage.shared.needsBFUReload = false
+            LogManager.shared.log(category: .general, message: "BFU reload triggered — reloading all StorageValues")
+            Storage.shared.reloadAll()
+            LogManager.shared.log(category: .general, message: "BFU reload complete: url='\(LogRedactor.url(Storage.shared.url.value))'")
+            // Show the loading overlay so the user sees feedback during the 2-5s
+            // while tasks re-run with the now-correct credentials.
+            loadingStates = ["bg": false, "profile": false, "deviceStatus": false]
+            isInitialLoad = true
+            setupLoadingState()
+            showLoadingOverlay()
+            // Tasks were scheduled during BFU viewDidLoad with url="" — they fired, found no
+            // data source, and rescheduled themselves 60s out. Reset them now so they run
+            // within their normal 2-5s initial delay using the now-correct credentials.
+            scheduleAllTasks()
+        }
+
         // reset screenlock state if needed
         UIApplication.shared.isIdleTimerDisabled = Storage.shared.screenlockSwitchState.value
 
@@ -827,6 +1186,9 @@ class MainViewController: UIViewController, UITableViewDataSource, ChartViewDele
 
     @objc override func viewDidAppear(_: Bool) {
         showHideNSDetails()
+        #if !targetEnvironment(macCatalyst)
+            LiveActivityManager.shared.startFromCurrentState()
+        #endif
     }
 
     func stringFromTimeInterval(interval: TimeInterval) -> String {
@@ -883,15 +1245,16 @@ class MainViewController: UIViewController, UITableViewDataSource, ChartViewDele
         }
     }
 
-    func setBGTextColor() {
+    func updateBGTextAppearance() {
         if bgData.count > 0 {
             let latestBG = bgData[bgData.count - 1].sgv
             var color = NSUIColor.label
             if Storage.shared.colorBGText.value {
-                if Double(latestBG) >= Storage.shared.highLine.value {
+                let thresholds = UnitSettingsStore.shared.effectiveThresholds()
+                if Double(latestBG) >= thresholds.high {
                     color = NSUIColor.systemYellow
                     Observable.shared.bgTextColor.value = .yellow
-                } else if Double(latestBG) <= Storage.shared.lowLine.value {
+                } else if Double(latestBG) <= thresholds.low {
                     color = NSUIColor.systemRed
                     Observable.shared.bgTextColor.value = .red
                 } else {
@@ -903,6 +1266,12 @@ class MainViewController: UIViewController, UITableViewDataSource, ChartViewDele
             }
 
             BGText.textColor = color
+
+            if latestBG <= globalVariables.minDisplayGlucose || latestBG >= globalVariables.maxDisplayGlucose {
+                BGText.font = UIFont.systemFont(ofSize: 65, weight: .black)
+            } else {
+                BGText.font = UIFont.systemFont(ofSize: 85, weight: .black)
+            }
         }
     }
 
@@ -1033,7 +1402,7 @@ class MainViewController: UIViewController, UITableViewDataSource, ChartViewDele
                 do {
                     try store.remove(i, span: EKSpan.thisEvent, commit: true)
                 } catch {
-                    print(error)
+                    LogManager.shared.log(category: .calendar, message: "Failed to remove calendar event: \(error.localizedDescription)")
                 }
             }
         }
@@ -1118,7 +1487,6 @@ class MainViewController: UIViewController, UITableViewDataSource, ChartViewDele
         for index in currentValidIndices {
             if !sortArray.contains(index) {
                 sortArray.append(index)
-                // print("Added missing index \(index) to sortArray")
             }
         }
 
@@ -1129,14 +1497,12 @@ class MainViewController: UIViewController, UITableViewDataSource, ChartViewDele
         if visibleArray.count < currentValidIndices.count {
             for i in visibleArray.count ..< currentValidIndices.count {
                 visibleArray.append(InfoType(rawValue: i)?.defaultVisible ?? false)
-                // print("Added default visibility for new index \(i)")
             }
         }
 
         // Trim excess elements if there are more than needed
         if visibleArray.count > currentValidIndices.count {
             visibleArray = Array(visibleArray.prefix(currentValidIndices.count))
-            // print("Trimmed visibleArray to match current valid indices")
         }
 
         Storage.shared.infoSort.value = sortArray
@@ -1227,42 +1593,56 @@ class MainViewController: UIViewController, UITableViewDataSource, ChartViewDele
     }
 
     @objc private func setupNightscoutTapped() {
-        let nightscoutSettingsView = NightscoutSettingsView(viewModel: .init())
+        let navController = UINavigationController()
+        let nightscoutSettingsView = NightscoutSettingsView(viewModel: .init(), usesModalCloseButton: true, onContinueToUnits: { [weak navController] in
+            let unitsView = UnitsOnboardingView {
+                navController?.dismiss(animated: true)
+            }
+            let unitsController = UIHostingController(rootView: unitsView)
+            let style = Storage.shared.appearanceMode.value.userInterfaceStyle
+            unitsController.overrideUserInterfaceStyle = style
+            navController?.pushViewController(unitsController, animated: true)
+        }, onImportSettings: { [weak navController] in
+            let importSettingsView = ImportExportSettingsView()
+            let importSettingsController = UIHostingController(rootView: importSettingsView)
+            let style = Storage.shared.appearanceMode.value.userInterfaceStyle
+            importSettingsController.overrideUserInterfaceStyle = style
+            navController?.pushViewController(importSettingsController, animated: true)
+        })
         let hostingController = UIHostingController(rootView: nightscoutSettingsView)
-        let navController = UINavigationController(rootViewController: hostingController)
 
         // Apply appearance mode
         let style = Storage.shared.appearanceMode.value.userInterfaceStyle
         hostingController.overrideUserInterfaceStyle = style
         navController.overrideUserInterfaceStyle = style
 
-        // Add a Done button
-        hostingController.navigationItem.rightBarButtonItem = UIBarButtonItem(
-            barButtonSystemItem: .done,
-            target: self,
-            action: #selector(dismissModal)
-        )
+        navController.setViewControllers([hostingController], animated: false)
+        hostingController.navigationItem.rightBarButtonItem = makeCloseBarButtonItem()
 
         navController.modalPresentationStyle = .pageSheet
         present(navController, animated: true)
     }
 
     @objc private func setupDexcomTapped() {
-        let dexcomSettingsView = DexcomSettingsView(viewModel: .init())
+        let navController = UINavigationController()
+        let dexcomSettingsView = DexcomSettingsView(viewModel: .init(), usesModalCloseButton: true, onContinueToUnits: { [weak navController] in
+            let unitsView = UnitsOnboardingView {
+                navController?.dismiss(animated: true)
+            }
+            let unitsController = UIHostingController(rootView: unitsView)
+            let style = Storage.shared.appearanceMode.value.userInterfaceStyle
+            unitsController.overrideUserInterfaceStyle = style
+            navController?.pushViewController(unitsController, animated: true)
+        })
         let hostingController = UIHostingController(rootView: dexcomSettingsView)
-        let navController = UINavigationController(rootViewController: hostingController)
 
         // Apply appearance mode
         let style = Storage.shared.appearanceMode.value.userInterfaceStyle
         hostingController.overrideUserInterfaceStyle = style
         navController.overrideUserInterfaceStyle = style
 
-        // Add a Done button
-        hostingController.navigationItem.rightBarButtonItem = UIBarButtonItem(
-            barButtonSystemItem: .done,
-            target: self,
-            action: #selector(dismissModal)
-        )
+        navController.setViewControllers([hostingController], animated: false)
+        hostingController.navigationItem.rightBarButtonItem = makeCloseBarButtonItem()
 
         navController.modalPresentationStyle = .pageSheet
         present(navController, animated: true)
@@ -1275,6 +1655,12 @@ class MainViewController: UIViewController, UITableViewDataSource, ChartViewDele
 
     private func showGraphs() {
         updateGraphVisibility()
+    }
+
+    private func makeCloseBarButtonItem() -> UIBarButtonItem {
+        let button = UIBarButtonItem(barButtonSystemItem: .close, target: self, action: #selector(dismissModal))
+        button.tintColor = .systemBlue
+        return button
     }
 
     private func hideAllDataUI() {

@@ -10,10 +10,12 @@ extension MainViewController {
         if !Storage.shared.downloadTreatments.value { return }
 
         let startTimeString = dateTimeUtils.getDateTimeString(addingDays: -1 * Storage.shared.downloadDays.value)
-        let currentTimeString = dateTimeUtils.getDateTimeString(addingHours: 6)
+        let endTimeString = dateTimeUtils.getDateTimeString(addingHours: 6)
+        let estimatedCount = max(Storage.shared.downloadDays.value * 100, 5000)
         let parameters: [String: String] = [
             "find[created_at][$gte]": startTimeString,
-            "find[created_at][$lte]": currentTimeString,
+            "find[created_at][$lte]": endTimeString,
+            "count": "\(estimatedCount)",
         ]
         NightscoutUtils.executeDynamicRequest(eventType: .treatments, parameters: parameters) { (result: Result<Any, Error>) in
             switch result {
@@ -33,6 +35,13 @@ extension MainViewController {
 
     // Process and split out treatments to individual tasks
     func updateTreatments(entries: [[String: AnyObject]]) {
+        // Deduplicate entries by "id" field (Trio/Loop UUID)
+        var seenIDs = Set<String>()
+        let uniqueEntries = entries.filter { entry in
+            guard let id = entry["id"] as? String else { return true }
+            return seenIDs.insert(id).inserted
+        }
+
         var tempBasal: [[String: AnyObject]] = []
         var bolus: [[String: AnyObject]] = []
         var smb: [[String: AnyObject]] = []
@@ -47,7 +56,7 @@ extension MainViewController {
         var cgmSensorStart: [sageData] = []
         var insulinCartridge: [iageData] = []
 
-        for entry in entries {
+        for entry in uniqueEntries {
             guard let eventType = entry["eventType"] as? String else {
                 continue
             }
